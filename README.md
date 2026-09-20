@@ -7,7 +7,7 @@ Community build system and device integration for the Ruijie RG-MA2820(T).
 It combines an OpenWrt userspace with the matching RGOS 4.1.52 kernel and
 Broadcom radio/Ethernet runtime supplied by the device owner.
 
-This is the public, sanitized continuation of release `r30`, which has run on
+This is the public, sanitized continuation of release `r33`, which has run on
 two hardware units with wired backhaul, A/B rollback, immutable LAN recovery,
 LuCI, WPA3/WPA2 roaming, and traffic-driven front-panel LEDs.
 
@@ -32,7 +32,8 @@ audited them.
 - full-image NAND readback, mount/read verification, trial boot, and rollback;
 - 2.4 GHz and 5 GHz vendor radios with WPA2/WPA3, 802.11k/v, and 5 GHz 802.11r;
 - coordinated wired-backhaul roaming between two APs;
-- dedicated LuCI wireless/roaming page and a custom operational overview;
+- dedicated LuCI wireless/roaming page and a custom operational overview,
+  both showing radios and associated clients across the AP pair;
 - WAN/LAN/Wi-Fi/WPS/Power LED control, including physical-port traffic activity;
 - automatic geographic timezone selection from the managing browser.
 
@@ -75,8 +76,10 @@ See [RECOVERY.md](docs/RECOVERY.md).
 ## Project status
 
 The source, deterministic image constructors, and runtime have regression
-coverage. Release `r30` was accepted on two observed hardware units. Community
-images built from other units remain experimental until their owners verify
+coverage. Release `r33` was accepted on two observed hardware units; its A/B
+gate invokes and identity-checks the complete pair-status RPC before accepting
+an update. Community images built from other units remain experimental until
+their owners verify
 the exact board revision, stock kernel/runtime, calibration data, and flash
 geometry.
 

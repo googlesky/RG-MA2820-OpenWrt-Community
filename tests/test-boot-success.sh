@@ -36,9 +36,25 @@ if [ "${1:-}" = -v ]; then
 		echo '\t"timezone_status":{}'
 		echo '\t"configure_timezone":{}'
 	}
+elif [ "${1:-}" = call ] && [ "${2:-}" = luci.rg-ma2820 ] &&
+	[ "${3:-}" = status ]; then
+	[ ! -e "${RG_TEST_STATE_DIR:?}/failed-rpc-status" ] || exit 1
+	if [ -e "$RG_TEST_STATE_DIR/wrong-rpc-status" ]; then
+		echo '{"device_id":"unexpected","peer_status":{"available":true,"online":true,"device_id":"ap3"}}'
+	elif [ -e "$RG_TEST_STATE_DIR/broken-rpc-schema" ]; then
+		echo '{"device_id":"ap2","peer_status":{"device_id":"ap3"}}'
+	else
+		echo '{"device_id":"ap2","peer_status":{"available":true,"online":true,"device_id":"ap3"}}'
+	fi
 else
 	echo luci.rg-ma2820
 fi
+EOF
+cat > "$mock_bin/jsonfilter" <<'EOF'
+#!/bin/sh
+[ "${1:-}" = -e ] && [ "$#" -eq 2 ] || exit 2
+expression=${2#@}
+jq -r "$expression"
 EOF
 cat > "$mock_bin/wl" <<'EOF'
 #!/bin/sh
@@ -86,6 +102,10 @@ WIFI_PROFILE='wired-mesh'
 ENABLE_5G_LEGACY='1'
 TXPOWER_5G_DBM='23'
 EOF
+cat > "$work_dir/device.env" <<'EOF'
+DEVICE_ID='ap2'
+PEER_ID='ap3'
+EOF
 cat > "$work_dir/hostapd-wl1.conf" <<'EOF'
 wpa_key_mgmt=SAE FT-SAE
 wpa_key_mgmt=WPA-PSK FT-PSK
@@ -117,6 +137,7 @@ run_trial_gate()
 	RG_MA2820_HOSTAPD_5G_CONFIG="$work_dir/hostapd-wl1.conf" \
 	RG_MA2820_WIFI_STATE="$work_dir/wifi.state" \
 	RG_MA2820_WIFI_ENV="$work_dir/wifi.env" \
+	RG_MA2820_DEVICE_ENV="$work_dir/device.env" \
 	RG_MA2820_STATUS_HELPER="$work_dir/status" \
 	RG_MA2820_OVERVIEW_HELPER="$work_dir/overview" \
 	RG_MA2820_CAPABILITY_HELPER="$work_dir/capabilities" \
@@ -134,6 +155,7 @@ run_trial_gate()
 	RG_MA2820_RPC_RELOAD_MARKER="$work_dir/rpc-reloads" \
 	RG_MA2820_RPC_RELOAD_DELAY=0 \
 	RG_MA2820_WL="$mock_bin/wl" \
+	RG_MA2820_JSONFILTER="$mock_bin/jsonfilter" \
 	RG_TEST_STATE_DIR="$work_dir" \
 	RG_TEST_DISABLED_INTERFACE="${RG_TEST_DISABLED_INTERFACE:-}" \
 	RG_TEST_TXPOWER_2G_QDBM="${RG_TEST_TXPOWER_2G_QDBM:-127}" \
@@ -160,6 +182,27 @@ if run_trial_gate; then
 	exit 1
 fi
 rm -f "$work_dir/stale-rpc" "$work_dir/keep-stale-rpc" "$work_dir/rpc-reloads"
+
+touch "$work_dir/failed-rpc-status"
+if run_trial_gate; then
+	echo 'trial gate accepted an RPC status call failure' >&2
+	exit 1
+fi
+rm -f "$work_dir/failed-rpc-status"
+
+touch "$work_dir/wrong-rpc-status"
+if run_trial_gate; then
+	echo 'trial gate accepted the wrong local RPC identity' >&2
+	exit 1
+fi
+rm -f "$work_dir/wrong-rpc-status"
+
+touch "$work_dir/broken-rpc-schema"
+if run_trial_gate; then
+	echo 'trial gate accepted an incomplete peer-status schema' >&2
+	exit 1
+fi
+rm -f "$work_dir/broken-rpc-schema"
 
 run_boot_mode()
 {

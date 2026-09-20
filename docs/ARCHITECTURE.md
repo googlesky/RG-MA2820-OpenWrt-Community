@@ -31,8 +31,10 @@ total while defining:
 An update writes only the inactive system slot, reads the complete NAND data
 back, mounts it with the retained kernel, reads every regular file, and marks
 one trial boot. The new system is accepted only after its network, SSH, LuCI,
-radio, roaming, and management health gate remains successful. Otherwise the
-bootstrap returns to the previously accepted slot.
+radio, roaming, management, and invoked pair-status RPC health gate remains
+successful. The RPC response must identify the expected local and peer roles,
+but the peer may be offline so either AP can still be updated independently.
+Otherwise the bootstrap returns to the previously accepted slot.
 
 Updating immutable recovery is a separate maintenance action. Its updater
 keeps a complete in-RAM backup and attempts restoration if post-write
@@ -63,7 +65,10 @@ Every Ethernet port joins `br-lan`; any port can be the uplink. The two APs
 exchange radio/channel state over Ethernet, install each other as 802.11k
 neighbors, offer 802.11v BSS transition, and support 802.11r on suitable 5 GHz
 profiles. Automatic channel selection coordinates non-overlapping fallback
-blocks after simultaneous power-up.
+blocks after simultaneous power-up. A strict, key-pinned SSH control plane on
+the deterministic link-local addresses carries peer state and read-only radio
+snapshots; either AP's custom LuCI pages can therefore show the serving AP and
+clients across the pair without exposing a new listener or shared password.
 
 The proprietary driver does not expose a usable mac80211 802.11s mesh-point
 mode. Marketing this design as wireless mesh would be misleading: Ethernet is
@@ -71,9 +76,10 @@ the backhaul, and standards-assisted client roaming is the service.
 
 ## Verified and unverified scope
 
-The private hardware campaign behind `r30` covered web conversion on stock,
+The private hardware campaign through `r33` covered web conversion on stock,
 A/B update/readback, deliberate rollback, immutable recovery, factory reset,
-simultaneous reboot, radios, Ethernet, LuCI/SSH, roaming, and LED behavior on
-two RG-MA2820(T) units. The public tree contains no claim that every board or
-RGOS release is byte-compatible. Compare model, hardware revision, kernel
+simultaneous reboot, radios, Ethernet, LuCI/SSH, pair-wide client visibility,
+roaming, and LED behavior on two RG-MA2820(T) units. The public tree contains
+no claim that every board or RGOS release is byte-compatible. Compare model,
+hardware revision, kernel
 version, NAND geometry, and UBI layout before building for another unit.

@@ -14,6 +14,7 @@ HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
 HOSTAPD_5G_CONFIG=${RG_MA2820_HOSTAPD_5G_CONFIG:-/var/run/hostapd-wl1.conf}
 WIFI_STATE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
 WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
 STATUS_HELPER=${RG_MA2820_STATUS_HELPER:-/usr/sbin/rg-ma2820-wifi-status}
 OVERVIEW_HELPER=${RG_MA2820_OVERVIEW_HELPER:-/usr/sbin/rg-ma2820-overview-status}
 CAPABILITY_HELPER=${RG_MA2820_CAPABILITY_HELPER:-/usr/sbin/rg-ma2820-wifi-capabilities}
@@ -31,6 +32,7 @@ RPC_INIT=${RG_MA2820_RPC_INIT:-/etc/init.d/rpcd}
 RPC_RELOAD_MARKER=${RG_MA2820_RPC_RELOAD_MARKER:-/var/run/rg-ma2820-rpc-reloads}
 RPC_RELOAD_DELAY=${RG_MA2820_RPC_RELOAD_DELAY:-2}
 WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+JSONFILTER=${RG_MA2820_JSONFILTER:-jsonfilter}
 
 log()
 {
@@ -80,6 +82,27 @@ rpc_api_healthy()
 		printf '%s\n' "$methods" | grep -q '"configure_timezone"'
 }
 
+rpc_status_healthy()
+{
+	local response expected_device expected_peer actual_device actual_peer
+	local available online
+	[ -r "$DEVICE_ENV" ] || return 1
+	expected_device="$(sed -n "s/^DEVICE_ID=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$DEVICE_ENV" | head -n 1)"
+	expected_peer="$(sed -n "s/^PEER_ID=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$DEVICE_ENV" | head -n 1)"
+	[ -n "$expected_device" ] && [ -n "$expected_peer" ] || return 1
+	response="$(ubus call luci.rg-ma2820 status '{}' 2>/dev/null)" || return 1
+	actual_device="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.device_id')" || return 1
+	actual_peer="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.peer_status.device_id')" || return 1
+	available="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.peer_status.available')" || return 1
+	online="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.peer_status.online')" || return 1
+	[ "$actual_device" = "$expected_device" ] || return 1
+	[ "$actual_peer" = "$expected_peer" ] || return 1
+	case "$available:$online" in
+		true:true|false:true|false:false) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
 ensure_rpc_api()
 {
 	local attempts
@@ -126,6 +149,7 @@ trial_system_healthy()
 	[ -s "$LUCI_I18N_BASE" ] || return 1
 	[ -s "$LUCI_I18N_APP" ] || return 1
 	ensure_rpc_api || return 1
+	rpc_status_healthy || return 1
 
 	[ "$profile" = wired-mesh ] || return 0
 	[ "$ENABLE_5G_LEGACY" != 1 ] ||

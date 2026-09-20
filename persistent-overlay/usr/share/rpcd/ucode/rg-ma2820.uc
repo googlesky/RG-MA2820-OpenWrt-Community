@@ -4,7 +4,11 @@
 
 import { popen } from 'fs';
 
-const STATUS = '/usr/sbin/rg-ma2820-wifi-status';
+const STATUS = getenv('RG_MA2820_STATUS_HELPER') || '/usr/sbin/rg-ma2820-wifi-status';
+const PEER_STATUS = getenv('RG_MA2820_PEER_STATUS_HELPER') ||
+	'. /etc/rg-ma2820/device.env && ' +
+	'ping -c 1 -W 1 "$PEER_LINK_LOCAL" >/dev/null 2>&1 && ' +
+	'timeout 4 /usr/sbin/rg-ma2820-peer -- /usr/sbin/rg-ma2820-wifi-status </dev/null 2>/dev/null';
 const OVERVIEW = '/usr/sbin/rg-ma2820-overview-status';
 const CAPABILITIES = '/usr/sbin/rg-ma2820-wifi-capabilities';
 const SCAN = '/usr/sbin/rg-ma2820-wifi-scan';
@@ -27,6 +31,37 @@ function read_json_helper(command) {
 	catch (e) {
 		return { error: 'invalid_helper_response' };
 	}
+}
+
+function attach_peer_status(status, peer) {
+	let snapshot = {
+		available: false,
+		online: !!status?.peer_online,
+		error: null,
+		device_id: status?.peer_id || '',
+		hostname: '',
+		release: '',
+		mesh_ready: false,
+		radios: []
+	};
+
+	if (!status?.peer_online)
+		snapshot.error = 'peer_offline';
+	else if (!peer || peer.error)
+		snapshot.error = 'peer_status_unavailable';
+	else if (peer.device_id != status.peer_id || peer.peer_id != status.device_id)
+		snapshot.error = 'peer_identity_mismatch';
+	else {
+		snapshot.available = true;
+		snapshot.device_id = peer.device_id;
+		snapshot.hostname = peer.hostname || peer.device_id;
+		snapshot.release = peer.release || '';
+		snapshot.mesh_ready = !!peer.mesh_ready;
+		snapshot.radios = type(peer.radios) == 'array' ? peer.radios : [];
+	}
+
+	status.peer_status = snapshot;
+	return status;
 }
 
 function valid_interface(value, include_virtual) {
@@ -118,7 +153,17 @@ const methods = {
 
 	status: {
 		call: function() {
-			return read_json_helper(STATUS);
+			/* rpcd integrates its ucode VM with a non-blocking event loop. Opening
+			 * a second popen before draining the first can make read('all') observe
+			 * an empty, still-running pipe. Drain the authoritative local snapshot
+			 * first, then query the peer. */
+			let status = read_json_helper(STATUS);
+			if (status.error)
+				return status;
+			if (!status.peer_online)
+				return attach_peer_status(status, null);
+			let peer = read_json_helper(PEER_STATUS);
+			return attach_peer_status(status, peer);
 		}
 	},
 

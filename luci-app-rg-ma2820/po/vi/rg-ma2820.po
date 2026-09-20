@@ -1133,3 +1133,45 @@ msgstr "Xanh liên tục báo mọi BSS đã cấu hình đều hoạt động; 
 
 msgid "Steady green means the peer is ready; brief blinks show successful peer probes; slow blinking means synchronizing; off means no peer."
 msgstr "Xanh liên tục báo AP bên kia sẵn sàng; nháy ngắn báo AP bên kia vừa phản hồi; nháy chậm báo đang đồng bộ; tắt là không có AP bên kia."
+
+msgid "This AP"
+msgstr "AP này"
+
+msgid "Peer AP"
+msgstr "AP bên kia"
+
+msgid "The peer AP is online, but its live radio and client snapshot is unavailable."
+msgstr "AP bên kia đang trực tuyến nhưng chưa lấy được ảnh chụp tức thời về radio và thiết bị khách."
+
+msgid "Live radios on this AP and its Ethernet-backhauled peer"
+msgstr "Radio trực tiếp trên AP này và AP bên kia dùng Ethernet backhaul"
+
+msgid "Peer snapshot live"
+msgstr "Dữ liệu peer trực tiếp"
+
+msgid "Peer snapshot unavailable"
+msgstr "Chưa lấy được dữ liệu peer"
+
+msgid "Connected AP"
+msgstr "AP đang kết nối"
+
+msgid "%d clients across both APs"
+msgstr "%d thiết bị trên cả hai AP"
+
+msgid "%d local clients · peer station list unavailable"
+msgstr "%d thiết bị cục bộ · chưa lấy được danh sách thiết bị từ peer"
+
+msgid "Read-only peer snapshot"
+msgstr "Dữ liệu peer chỉ đọc"
+
+msgid "%s · %s · %s GHz · %s"
+msgstr "%s · %s · %s GHz · %s"
+
+msgid "This AP: %s"
+msgstr "AP này: %s"
+
+msgid "Peer AP: %s"
+msgstr "AP bên kia: %s"
+
+msgid "Peer radio and client details will appear here when the peer is online."
+msgstr "Chi tiết radio và thiết bị khách của AP bên kia sẽ xuất hiện tại đây khi peer trực tuyến."

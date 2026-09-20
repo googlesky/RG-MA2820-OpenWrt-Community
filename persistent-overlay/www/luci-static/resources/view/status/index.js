@@ -86,6 +86,33 @@ function formatRate(kbps) {
 	return kbps >= 1000 ? _('%s Mbit/s').format((kbps / 1000).toFixed(kbps >= 100000 ? 0 : 1)) : _('%s kbit/s').format(kbps);
 }
 
+function wirelessNodes(wireless) {
+	let nodes = [{
+		device_id: wireless?.device_id || 'local',
+		hostname: wireless?.hostname || _('This AP'),
+		local: true,
+		radios: wireless?.radios || []
+	}];
+	let peer = wireless?.peer_status;
+	if (peer?.available)
+		nodes.push({
+			device_id: peer.device_id,
+			hostname: peer.hostname || peer.device_id,
+			local: false,
+			radios: peer.radios || []
+		});
+	return nodes;
+}
+
+function collectWirelessClients(wireless) {
+	let clients = [];
+	for (const node of wirelessNodes(wireless))
+		for (const radio of node.radios)
+			for (const client of (radio.clients || []))
+				clients.push({ node, radio, client });
+	return clients;
+}
+
 function percent(used, total) {
 	total = Number(total || 0);
 	return total > 0 ? Math.max(0, Math.min(100, Math.round(Number(used || 0) * 100 / total))) : 0;
@@ -198,6 +225,8 @@ function collectWarnings(system, wireless) {
 		warnings.push({ level: 'error', text: _('The front-panel controller detected a core service, NAND, or thermal fault.') });
 	if ([ 'degraded', 'offline' ].includes(system.leds?.uplink) && system.network?.gateway)
 		warnings.push({ level: 'warning', text: _('The uplink gateway health check is failing.') });
+	if (wireless?.peer_online && wireless?.peer_status && !wireless.peer_status.available)
+		warnings.push({ level: 'warning', text: _('The peer AP is online, but its live radio and client snapshot is unavailable.') });
 	if (Number(system.system?.temperature_mc) >= thermalCritical)
 		warnings.push({ level: 'error', text: _('Device temperature is critical: %s °C.').format((system.system.temperature_mc / 1000).toFixed(1)) });
 	else if (Number(system.system?.temperature_mc) >= thermalWarning)
@@ -423,31 +452,34 @@ return view.extend({
 	},
 
 	renderWireless(wireless) {
-		let radios = (wireless.radios || []).map(radio => E('div', { class: 'rg-radio' }, [
-			E('strong', {}, [ radio.ssid, E('br'), E('small', { class: 'rg-muted' }, `${radio.interface} · ${radio.bssid}`) ]),
+		let radios = [];
+		for (const node of wirelessNodes(wireless))
+			for (const radio of node.radios)
+				radios.push(E('div', { class: 'rg-radio' }, [
+			E('strong', {}, [ radio.ssid, E('br'), E('small', { class: 'rg-muted' }, `${node.hostname} · ${radio.interface} · ${radio.bssid}`) ]),
 			E('span', {}, [ badge(radio.online ? _('Online') : _('Offline'), radio.online ? 'good' : 'error'), E('br'), E('small', { class: 'rg-muted' }, radio.band === '2g' ? '2.4 GHz' : '5 GHz') ]),
 			E('span', {}, [ _('%s / %s MHz').format(valueOr(radio.channel), valueOr(radio.width)), E('br'), E('small', { class: 'rg-muted' }, radio.security) ]),
 			E('span', {}, [ _('%d clients').format(Number(radio.client_count || 0)), E('br'), E('small', { class: 'rg-muted' }, _('TX %s dBm · noise %d dBm').format(valueOr(radio.txpower_dbm), Number(radio.noise_dbm || 0))) ])
 		]));
-		return card(_('Wi-Fi & wired roaming'), _('Ethernet backhaul with 802.11k/v and optional 802.11r'), [
+		let peer = wireless.peer_status || {};
+		return card(_('Wi-Fi & wired roaming'), _('Live radios on this AP and its Ethernet-backhauled peer'), [
 			E('div', { class: 'rg-service-list', style: 'margin-bottom:10px' }, [
 				badge(wireless.config_synced ? _('Configuration synchronized') : _('Configuration differs'), wireless.config_synced ? 'good' : 'warning'),
 				badge(wireless.channel_plan_ok ? _('Channel plan healthy') : _('Channel plan needs attention'), wireless.channel_plan_ok ? 'good' : 'warning'),
 				badge(wireless.neighbor_synced ? _('Neighbors synchronized') : _('Neighbors not synchronized'), wireless.neighbor_synced ? 'good' : 'warning'),
-				badge(wireless.roaming_online ? _('Steering online') : _('Steering offline'), wireless.roaming_online ? 'good' : 'warning')
+				badge(wireless.roaming_online ? _('Steering online') : _('Steering offline'), wireless.roaming_online ? 'good' : 'warning'),
+				badge(peer.available ? _('Peer snapshot live') : (wireless.peer_online ? _('Peer snapshot unavailable') : _('Peer offline')), peer.available ? 'good' : (wireless.peer_online ? 'warning' : 'error'))
 			]),
 			E('div', { class: 'rg-radio-list' }, radios)
 		], 12);
 	},
 
 	renderClients(wireless) {
-		let clients = [];
-		for (const radio of (wireless.radios || []))
-			for (const client of (radio.clients || []))
-				clients.push({ radio, client });
+		let clients = collectWirelessClients(wireless);
 		clients.sort((a, b) => Number(b.client.rssi || -100) - Number(a.client.rssi || -100));
-		let rows = clients.map(({ radio, client }) => E('tr', { class: 'tr' }, [
+		let rows = clients.map(({ node, radio, client }) => E('tr', { class: 'tr' }, [
 			E('td', { class: 'td' }, [ E('strong', {}, client.mac), E('br'), E('small', { class: 'rg-muted' }, client.ip_address || _('IP address unknown')) ]),
+			E('td', { class: 'td' }, [ E('strong', {}, node.hostname), E('br'), E('small', { class: 'rg-muted' }, node.local ? _('This AP') : _('Peer AP')) ]),
 			E('td', { class: 'td' }, [ radio.ssid, E('br'), E('small', { class: 'rg-muted' }, `${radio.interface} · ${radio.band === '2g' ? '2.4 GHz' : '5 GHz'}`) ]),
 			E('td', { class: 'td' }, [ _('%d dBm').format(client.rssi), E('br'), E('small', { class: 'rg-muted' }, client.phy) ]),
 			E('td', { class: 'td' }, [ _('TX %s').format(formatRate(client.tx_rate_kbps)), E('br'), E('small', { class: 'rg-muted' }, _('RX %s').format(formatRate(client.rx_rate_kbps))) ]),
@@ -455,10 +487,13 @@ return view.extend({
 			E('td', { class: 'td' }, [ client.rrm ? '802.11k ' : '', client.bss_transition ? '802.11v' : '' ])
 		]));
 		if (!rows.length)
-			rows.push(E('tr', { class: 'tr' }, E('td', { class: 'td rg-muted', colspan: 6 }, _('No wireless clients are associated.'))));
-		return card(_('Associated wireless clients'), _('%d clients across all active BSSs').format(clients.length), E('div', { class: 'rg-table-wrap' }, E('table', { class: 'table' }, [
+			rows.push(E('tr', { class: 'tr' }, E('td', { class: 'td rg-muted', colspan: 7 }, _('No wireless clients are associated.'))));
+		let subtitle = wireless.peer_status?.available
+			? _('%d clients across both APs').format(clients.length)
+			: _('%d local clients · peer station list unavailable').format(clients.length);
+		return card(_('Associated wireless clients'), subtitle, E('div', { class: 'rg-table-wrap' }, E('table', { class: 'table' }, [
 			E('tr', { class: 'tr table-titles' }, [
-				E('th', { class: 'th' }, _('Client')), E('th', { class: 'th' }, _('BSS')),
+				E('th', { class: 'th' }, _('Client')), E('th', { class: 'th' }, _('Connected AP')), E('th', { class: 'th' }, _('BSS')),
 				E('th', { class: 'th' }, _('Signal / PHY')), E('th', { class: 'th' }, _('Current rate')),
 				E('th', { class: 'th' }, _('Connection age')), E('th', { class: 'th' }, _('Roaming support'))
 			]), ...rows

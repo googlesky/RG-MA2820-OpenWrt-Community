@@ -228,7 +228,7 @@ return view.extend({
 		});
 	},
 
-	renderClients(radio) {
+	renderClients(radio, peerView) {
 		let rows = (radio.clients || []).map(client => E('tr', { class: 'tr' }, [
 			E('td', { class: 'td', 'data-title': _('Client') }, [
 				E('strong', {}, client.mac), E('br'),
@@ -250,12 +250,12 @@ return view.extend({
 				E('br'), E('small', {}, _('Connected %s · idle %s').format(formatDuration(client.connected_seconds), formatDuration(client.idle_seconds)))
 			]),
 			E('td', { class: 'td', 'data-title': _('Actions') }, [
-				radio.steering ? E('button', {
+				peerView ? E('small', {}, _('Read-only peer snapshot')) : (radio.steering ? E('button', {
 					class: 'btn cbi-button cbi-button-action',
 					click: ev => this.handleAction('steer', radio.interface, client.mac, ev)
-				}, _('Steer')) : '',
-				' ',
-				E('button', {
+				}, _('Steer')) : ''),
+				peerView ? '' : ' ',
+				peerView ? '' : E('button', {
 					class: 'btn cbi-button cbi-button-negative',
 					click: ev => this.handleAction('disconnect', radio.interface, client.mac, ev)
 				}, _('Disconnect'))
@@ -269,6 +269,19 @@ return view.extend({
 				E('th', { class: 'th' }, _('PHY / security')), E('th', { class: 'th' }, _('Traffic')),
 				E('th', { class: 'th' }, _('Roaming')), E('th', { class: 'th' }, _('Actions'))
 			]), ...rows
+		]);
+	},
+
+	renderRadioStatus(radio, nodeName, peerView) {
+		return E('div', { class: 'cbi-section' }, [
+			E('h3', {}, _('%s · %s · %s GHz · %s').format(
+				nodeName, radio.online ? _('ONLINE') : _('OFFLINE'), radio.band === '2g' ? '2.4' : '5', radio.ssid)),
+			E('div', { class: 'cbi-section-descr' },
+				_('Interface %s · BSSID %s · channel %s/%s MHz · TX %s dBm · noise %d dBm · color %d · %s · %d/%d clients').format(
+					radio.interface, valueOr(radio.bssid), valueOr(radio.channel), valueOr(radio.width), valueOr(radio.txpower_dbm),
+					radio.noise_dbm, radio.bss_color, securityLabel(radio.security, radio.fast_transition, radio.mfp),
+					radio.client_count || 0, radio.max_clients || 0)),
+			this.renderClients(radio, peerView)
 		]);
 	},
 
@@ -297,17 +310,18 @@ return view.extend({
 		let warningNodes = (data.warnings || []).map(code => E('div', {
 			class: `alert-message ${[ 'recovery_mode', 'dfs_channel', 'legacy_schema' ].includes(code) ? 'notice' : 'warning'}`
 		}, warnings[code] || code));
-		let radios = (data.radios || []).map(radio => E('div', { class: 'cbi-section' }, [
-			E('h3', {}, _('%s · %s GHz · %s').format(radio.online ? _('ONLINE') : _('OFFLINE'), radio.band === '2g' ? '2.4' : '5', radio.ssid)),
-			E('div', { class: 'cbi-section-descr' },
-				_('Interface %s · BSSID %s · channel %s/%s MHz · TX %s dBm · noise %d dBm · color %d · %s · %d/%d clients').format(
-					radio.interface, valueOr(radio.bssid), valueOr(radio.channel), valueOr(radio.width), valueOr(radio.txpower_dbm),
-					radio.noise_dbm, radio.bss_color, securityLabel(radio.security, radio.fast_transition, radio.mfp),
-					radio.client_count || 0, radio.max_clients || 0)),
-			this.renderClients(radio)
-		]));
+		let radios = (data.radios || []).map(radio =>
+			this.renderRadioStatus(radio, _('This AP: %s').format(data.hostname), false));
+		let peer = data.peer_status || {};
+		let peerRadios = peer.available
+			? (peer.radios || []).map(radio => this.renderRadioStatus(
+				radio, _('Peer AP: %s').format(peer.hostname || peer.device_id), true))
+			: [ E('div', { class: `alert-message ${data.peer_online ? 'warning' : 'notice'}` },
+				data.peer_online
+					? _('The peer AP is online, but its live radio and client snapshot is unavailable.')
+					: _('Peer radio and client details will appear here when the peer is online.')) ];
 		let events = data.events?.length ? data.events.join('\n') : _('No steering events have been recorded.');
-		return E('div', {}, [ summary, ...warningNodes, ...radios,
+		return E('div', {}, [ summary, ...warningNodes, ...radios, ...peerRadios,
 			data.recovery ? '' : E('div', { class: 'cbi-section' }, [
 				E('h3', {}, _('Recent roaming events')),
 				E('pre', { style: 'white-space:pre-wrap;max-height:18em;overflow:auto' }, events)
