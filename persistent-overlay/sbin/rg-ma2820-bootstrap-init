@@ -1,0 +1,102 @@
+#!/bin/sh
+# PID 1 bootstrap. The kernel always mounts the immutable recovery root first;
+# this script then selects a separately updatable A/B system SquashFS.
+
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
+BOOTSTATE=/usr/libexec/rg-ma2820/bootstate
+SYSTEM_MOUNT=/mnt/system
+
+log()
+{
+	echo "rg-ma2820-bootstrap: $*" > /dev/console
+}
+
+mount_early_filesystems()
+{
+	grep -q ' /proc ' /proc/mounts 2>/dev/null || mount -t proc proc /proc
+	grep -q ' /sys ' /proc/mounts 2>/dev/null || mount -t sysfs sysfs /sys
+	grep -q ' /tmp ' /proc/mounts 2>/dev/null ||
+		mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs /tmp
+}
+
+volume_id()
+{
+	[ "$1" = a ] && echo 4 || echo 5
+}
+
+try_system()
+{
+	local slot="$1"
+	local volid block candidate_id candidate_format
+	volid=$(volume_id "$slot")
+	block="/dev/ubiblock0_${volid}"
+
+	mkdir -p "$SYSTEM_MOUNT"
+	[ -b "$block" ] || ubiblock --create "/dev/ubi0_${volid}" >/dev/null 2>&1 || return 1
+	mount -t squashfs -o ro "$block" "$SYSTEM_MOUNT" >/dev/null 2>&1 || return 1
+
+	candidate_id=$(sed -n "s/^DEVICE_ID='\([^']*\)'/\1/p" \
+		"$SYSTEM_MOUNT/etc/rg-ma2820/device.env" 2>/dev/null)
+	candidate_format=$(sed -n "s/^SYSTEM_FORMAT='\([^']*\)'/\1/p" \
+		"$SYSTEM_MOUNT/etc/rg-ma2820/device.env" 2>/dev/null)
+	. /etc/rg-ma2820/device.env
+	if [ "$candidate_id" != "$DEVICE_ID" ] ||
+		[ "$candidate_format" != "$SYSTEM_FORMAT" ] ||
+		[ ! -x "$SYSTEM_MOUNT/sbin/init" ] ||
+		[ ! -d "$SYSTEM_MOUNT/.bootstrap" ]; then
+		umount "$SYSTEM_MOUNT" 2>/dev/null || true
+		ubiblock --remove "/dev/ubi0_${volid}" >/dev/null 2>&1 || true
+		return 1
+	fi
+
+	sync
+	log "starting validated system slot $slot"
+
+	# Follow the same pivot ordering used by OpenWrt fstools: move proc before
+	# pivot_root, then recover the other early mounts from the old root.
+	mount -o move /proc "$SYSTEM_MOUNT/proc" || return 1
+	cd "$SYSTEM_MOUNT" || return 1
+	pivot_root . .bootstrap || return 1
+	# /dev/null belongs to the old root until this first move succeeds.  Do not
+	# redirect this command to /dev/null: doing so prevents the shell from ever
+	# executing it after pivot_root.  A fresh tmpfs is a last-resort fallback so
+	# the real OpenWrt init can still create the complete device namespace.
+	if ! mount -o move /.bootstrap/dev /dev; then
+		echo 'rg-ma2820-bootstrap: could not move /dev; using a minimal fallback' \
+			> /.bootstrap/dev/console
+		mount -t tmpfs -o mode=0755,size=512K tmpfs /dev || true
+		mknod -m 0600 /dev/console c 5 1 2>/dev/null || true
+		mknod -m 0666 /dev/null c 1 3 2>/dev/null || true
+	fi
+	mount -o move /.bootstrap/sys /sys || log 'could not preserve early /sys mount'
+	mount -o move /.bootstrap/tmp /tmp || log 'could not preserve early /tmp mount'
+	echo "$slot" > /tmp/rg-ma2820-system-slot 2>/dev/null || true
+	umount -l /.bootstrap 2>/dev/null || true
+	exec /sbin/init
+}
+
+enter_recovery()
+{
+	log 'entering immutable LAN recovery mode'
+	if /sbin/mount_root ram; then
+		export INITRAMFS=1
+	fi
+	exec /sbin/init.openwrt
+}
+
+mount_early_filesystems
+
+tries=0
+while [ "$tries" -lt 2 ]; do
+	slot=$($BOOTSTATE prepare 2>/dev/null) || break
+	if try_system "$slot"; then
+		exit 0
+	fi
+	log "system slot $slot failed validation; rejecting it"
+	$BOOTSTATE reject "$slot" >/dev/null 2>&1 || break
+	tries=$((tries + 1))
+done
+
+enter_recovery

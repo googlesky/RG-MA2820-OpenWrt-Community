@@ -1,0 +1,78 @@
+#!/bin/sh
+# Perform an explicit Broadcom background scan and return normalized JSON.
+
+JSHN=${RG_MA2820_JSHN:-/usr/share/libubox/jshn.sh}
+. "$JSHN"
+set -e
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+SCAN_WAIT=${RG_MA2820_SCAN_WAIT:-3}
+
+case "${1:-}" in wl0|wl1) interface=$1 ;; *) echo 'interface must be wl0 or wl1' >&2; exit 2 ;; esac
+temporary=$(mktemp /tmp/rg-ma2820-scan.XXXXXX)
+records=$(mktemp /tmp/rg-ma2820-scan-records.XXXXXX)
+trap 'rm -f "$temporary" "$records"' EXIT INT TERM
+
+$WL -i "$interface" scan >/dev/null 2>&1 || {
+	echo 'driver rejected the scan request' >&2
+	exit 1
+}
+sleep "$SCAN_WAIT"
+$WL -i "$interface" scanresults > "$temporary" 2>/dev/null || {
+	echo 'driver did not return scan results' >&2
+	exit 1
+}
+
+awk '
+	function clean(value) { gsub(/[|\r\n]/, " ", value); return value }
+	function emit() {
+		if (seen)
+			print clean(ssid) "|" bssid "|" rssi "|" snr "|" noise "|" channel "|" security "|" phy "|" rrm "|" btm
+	}
+	/^SSID: / {
+		emit(); seen=1; ssid=$0; sub(/^SSID: "/, "", ssid); sub(/"$/, "", ssid)
+		bssid=rssi=snr=noise=channel=""; security="open"; phy="legacy"; rrm=btm=0
+		next
+	}
+	/^Mode: / {
+		for (i=1; i<=NF; i++) {
+			if ($i == "RSSI:") rssi=$(i+1)
+			if ($i == "SNR:") snr=$(i+1)
+			if ($i == "noise:") noise=$(i+1)
+			if ($i == "Channel:") channel=$(i+1)
+		}
+	}
+	/^BSSID: / { bssid=$2; if ($0 ~ /RRM/) rrm=1 }
+	/^RSN / { security=($0 ~ /(WPA3|SAE)/) ? "WPA3-SAE" : "WPA2/RSN" }
+	/^[ \t]*AKM Suites/ {
+		has_psk=($0 ~ /PSK/); has_sae=($0 ~ /SAE/)
+		if (has_psk && has_sae) security="WPA2/WPA3"
+		else if (has_sae) security="WPA3-SAE"
+	}
+	/^WPA:/ { if (security == "open") security="WPA" }
+	/^HE Capable:/ { phy="Wi-Fi 6 (HE)" }
+	/^VHT Capable:/ { if (phy == "legacy") phy="Wi-Fi 5 (VHT)" }
+	/^HT Capable:/ { if (phy == "legacy") phy="Wi-Fi 4 (HT)" }
+	/^Extended Capabilities:/ { if ($0 ~ /BSS_Transition/) btm=1 }
+	END { emit() }
+' "$temporary" > "$records"
+
+json_init
+json_add_string interface "$interface"
+json_add_array networks
+while IFS='|' read -r ssid bssid rssi snr noise channel security phy rrm btm; do
+	[ -n "$bssid" ] || continue
+	json_add_object ''
+	json_add_string ssid "$ssid"
+	json_add_string bssid "$(echo "$bssid" | tr 'A-F' 'a-f')"
+	json_add_int rssi "${rssi:--127}"
+	json_add_int snr "${snr:-0}"
+	json_add_int noise "${noise:--127}"
+	json_add_string channel "$channel"
+	json_add_string security "$security"
+	json_add_string phy "$phy"
+	[ "$rrm" = 1 ] && json_add_boolean rrm 1 || json_add_boolean rrm 0
+	[ "$btm" = 1 ] && json_add_boolean bss_transition 1 || json_add_boolean bss_transition 0
+	json_close_object
+done < "$records"
+json_close_array
+json_dump

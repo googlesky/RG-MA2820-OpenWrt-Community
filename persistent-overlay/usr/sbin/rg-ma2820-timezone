@@ -1,0 +1,157 @@
+#!/bin/sh
+# Detect and synchronize an IANA timezone without relying on an external API.
+
+set -eu
+
+UCI=${RG_MA2820_UCI:-uci}
+SYSTEM_INIT=${RG_MA2820_SYSTEM_INIT:-/etc/init.d/system}
+PEER=${RG_MA2820_PEER:-/usr/sbin/rg-ma2820-peer}
+ZONEINFO=${RG_MA2820_ZONEINFO:-/usr/share/ucode/luci/zoneinfo.uc}
+LOCK=${RG_MA2820_LOCK:-/bin/lock}
+LOCK_FILE=${RG_MA2820_TIMEZONE_LOCK:-/var/lock/rg-ma2820-timezone.lock}
+TIMEOUT=${RG_MA2820_TIMEOUT:-timeout}
+
+fail()
+{
+	echo "$*" >&2
+	return 1
+}
+
+bool_value()
+{
+	case "$1" in
+		1|true) echo 1 ;;
+		0|false) echo 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+valid_zone_name()
+{
+	[ "$1" = UTC ] || printf '%s\n' "$1" |
+		grep -Eq '^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)+$'
+}
+
+resolve_zone()
+{
+	local zone="$1" value
+	valid_zone_name "$zone" || fail 'invalid IANA timezone name'
+	if [ "$zone" = UTC ]; then
+		echo GMT0
+		return 0
+	fi
+	# Do not call `ubus luci getTimezones` here. This helper is also invoked
+	# synchronously by rpcd; calling back into rpcd would deadlock that request.
+	# LuCI's generated local database has simple single-quoted key/value rows.
+	value="$(awk -F "'" -v wanted="$zone" \
+		'$2 == wanted { print $4; exit }' "$ZONEINFO" 2>/dev/null)"
+	[ -n "$value" ] || fail 'timezone is not present in the local LuCI database'
+	printf '%s\n' "$value"
+}
+
+get_value()
+{
+	$UCI -q get "system.@system[0].$1" 2>/dev/null || true
+}
+
+reload_system()
+{
+	$TIMEOUT 15 "$SYSTEM_INIT" reload >/dev/null 2>&1
+}
+
+unlock_configuration()
+{
+	$LOCK -u "$LOCK_FILE" >/dev/null 2>&1 || true
+}
+
+status_json()
+{
+	local zone timezone automatic initialized
+	zone="$(get_value zonename)"
+	timezone="$(get_value timezone)"
+	automatic="$(get_value timezone_auto)"
+	initialized="$(get_value timezone_detected)"
+	[ -n "$zone" ] || zone=UTC
+	[ -n "$timezone" ] || timezone=GMT0
+	[ "$automatic" = 0 ] || automatic=1
+	[ "$initialized" = 1 ] || initialized=0
+	printf '{ "zonename": "%s", "timezone": "%s", "automatic": %s, "initialized": %s }\n' \
+		"$zone" "$timezone" "$([ "$automatic" = 1 ] && echo true || echo false)" \
+		"$([ "$initialized" = 1 ] && echo true || echo false)"
+}
+
+restore_local()
+{
+	local old_zone="$1" old_timezone="$2" old_auto="$3" old_initialized="$4"
+	$UCI -q set "system.@system[0].zonename=$old_zone"
+	$UCI -q set "system.@system[0].timezone=$old_timezone"
+	$UCI -q set "system.@system[0].timezone_auto=$old_auto"
+	$UCI -q set "system.@system[0].timezone_detected=$old_initialized"
+	$UCI -q commit system
+	reload_system || true
+}
+
+apply_local()
+{
+	local zone="$1" automatic="$2" timezone
+	local old_zone old_timezone old_auto old_initialized
+	timezone="$(resolve_zone "$zone")" || return 1
+	old_zone="$(get_value zonename)"; [ -n "$old_zone" ] || old_zone=UTC
+	old_timezone="$(get_value timezone)"; [ -n "$old_timezone" ] || old_timezone=GMT0
+	old_auto="$(get_value timezone_auto)"; [ "$old_auto" = 0 ] || old_auto=1
+	old_initialized="$(get_value timezone_detected)"; [ "$old_initialized" = 1 ] || old_initialized=0
+
+	$UCI -q set "system.@system[0].zonename=$zone" &&
+		$UCI -q set "system.@system[0].timezone=$timezone" &&
+		$UCI -q set "system.@system[0].timezone_auto=$automatic" &&
+		$UCI -q set 'system.@system[0].timezone_detected=1' &&
+		$UCI -q commit system || {
+		restore_local "$old_zone" "$old_timezone" "$old_auto" "$old_initialized"
+		return 1
+	}
+	if ! reload_system; then
+		restore_local "$old_zone" "$old_timezone" "$old_auto" "$old_initialized"
+		fail 'system service rejected the timezone'
+		return 1
+	fi
+	[ "$(cat /etc/TZ 2>/dev/null)" = "$timezone" ] ||
+		[ "${RG_MA2820_SKIP_TZ_VERIFY:-0}" = 1 ] || {
+		restore_local "$old_zone" "$old_timezone" "$old_auto" "$old_initialized"
+		fail 'runtime timezone verification failed'
+		return 1
+	}
+}
+
+case "${1:-status}" in
+	status)
+		[ "$#" -eq 0 ] || [ "$#" -eq 1 ] || fail 'usage: rg-ma2820-timezone status'
+		status_json
+		;;
+	--configure)
+		[ "$#" -eq 4 ] || fail 'usage: rg-ma2820-timezone --configure ZONE AUTO local|pair'
+		zone=$2
+		automatic="$(bool_value "$3")" || fail 'automatic must be true or false'
+		scope=$4
+		resolve_zone "$zone" >/dev/null
+		case "$scope" in
+			local) ;;
+			pair)
+				[ -x "$PEER" ] || fail 'peer helper is unavailable'
+				$TIMEOUT 20 "$PEER" -- /usr/sbin/rg-ma2820-timezone --configure \
+					"$zone" "$automatic" local </dev/null >/dev/null ||
+					fail 'peer rejected the timezone; local AP was not changed'
+				;;
+			*) fail 'scope must be local or pair' ;;
+		esac
+		# Lock only the local commit. Holding this AP's lock while asking the
+		# peer to acquire its own would deadlock if both dashboards synchronized
+		# at the same time.
+		mkdir -p "${LOCK_FILE%/*}" || fail 'cannot create timezone lock directory'
+		$LOCK "$LOCK_FILE" || fail 'cannot lock timezone configuration'
+		trap unlock_configuration EXIT
+		trap 'exit 1' HUP INT TERM
+		apply_local "$zone" "$automatic"
+		status_json
+		;;
+	*) fail 'usage: rg-ma2820-timezone [status|--configure ZONE AUTO local|pair]' ;;
+esac

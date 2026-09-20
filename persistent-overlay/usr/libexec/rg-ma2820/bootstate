@@ -1,0 +1,222 @@
+#!/bin/sh
+# Atomic A/B system-root state kept outside the configuration overlay.
+
+set -eu
+
+STATE_DEV=${RG_MA2820_STATE_DEV:-/dev/ubi0_6}
+STATE_BYTES=4096
+LOCK_DIR=/tmp/rg-ma2820-bootstate.lock
+RAW=/tmp/rg-ma2820-bootstate.raw
+TEXT=/tmp/rg-ma2820-bootstate.txt
+PAYLOAD=/tmp/rg-ma2820-bootstate.payload
+NEW=/tmp/rg-ma2820-bootstate.new
+
+die()
+{
+	echo "rg-ma2820-bootstate: $*" >&2
+	exit 1
+}
+
+state_value()
+{
+	local key="$1"
+	sed -n "s/^${key}=//p" "$TEXT"
+}
+
+valid_slot()
+{
+	[ "$1" = a ] || [ "$1" = b ] || [ "$1" = none ]
+}
+
+read_state()
+{
+	[ -c "$STATE_DEV" ] || return 1
+	dd if="$STATE_DEV" of="$RAW" bs="$STATE_BYTES" count=1 2>/dev/null || return 1
+	tr -d '\000\377' < "$RAW" > "$TEXT"
+	sed -n '1,7p' "$TEXT" > "$PAYLOAD"
+
+	format=$(state_value format)
+	generation=$(state_value generation)
+	active=$(state_value active)
+	pending=$(state_value pending)
+	booting=$(state_value booting)
+	force_recovery=$(state_value force_recovery)
+	last_result=$(state_value last_result)
+	checksum=$(state_value checksum)
+
+	[ "$format" = 1 ] || return 1
+	echo "$generation" | grep -Eq '^[0-9]+$' || return 1
+	valid_slot "$active" && [ "$active" != none ] || return 1
+	valid_slot "$pending" || return 1
+	valid_slot "$booting" || return 1
+	case "$force_recovery" in 0|1) ;; *) return 1 ;; esac
+	echo "$last_result" | grep -Eq '^[a-z0-9-]+$' || return 1
+	[ "$checksum" = "$(sha256sum "$PAYLOAD" | cut -d' ' -f1)" ] || return 1
+}
+
+write_state()
+{
+	generation=$((generation + 1))
+	{
+		echo 'format=1'
+		echo "generation=$generation"
+		echo "active=$active"
+		echo "pending=$pending"
+		echo "booting=$booting"
+		echo "force_recovery=$force_recovery"
+		echo "last_result=$last_result"
+	} > "$PAYLOAD"
+	checksum=$(sha256sum "$PAYLOAD" | cut -d' ' -f1)
+	{
+		cat "$PAYLOAD"
+		echo "checksum=$checksum"
+	} > "$NEW"
+	[ "$(wc -c < "$NEW")" -le "$STATE_BYTES" ] || return 1
+	ubiupdatevol "$STATE_DEV" "$NEW" >/dev/null
+	sync
+}
+
+default_state()
+{
+	format=1
+	generation=0
+	active=a
+	pending=none
+	booting=none
+	force_recovery=0
+	last_result=factory
+}
+
+lock_state()
+{
+	local tries=0
+	while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+		tries=$((tries + 1))
+		[ "$tries" -lt 50 ] || die 'state lock timed out'
+		sleep 1
+	done
+	trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+}
+
+print_state()
+{
+	cat "$PAYLOAD"
+	echo "checksum=$checksum"
+}
+
+command=${1:-status}
+case "$command" in
+	status)
+		read_state || die 'state is missing or invalid; recovery mode required'
+		print_state
+		;;
+	prepare)
+		lock_state
+		read_state || die 'state is missing or invalid; recovery mode required'
+		[ "$force_recovery" = 0 ] || die 'recovery mode was requested'
+
+		if [ "$booting" != none ]; then
+			if [ "$pending" = "$booting" ]; then
+				pending=none
+				booting=none
+				last_result=pending-failed
+				write_state
+			else
+				booting=none
+				force_recovery=1
+				last_result=active-failed
+				write_state
+				die 'the active system did not accept its previous boot'
+			fi
+		fi
+
+		if [ "$pending" != none ]; then
+			slot=$pending
+		else
+			slot=$active
+		fi
+		booting=$slot
+		last_result=booting
+		write_state
+		echo "$slot"
+		;;
+	reject)
+		[ "$#" -eq 2 ] || die 'usage: bootstate reject SLOT'
+		slot=$2
+		valid_slot "$slot" && [ "$slot" != none ] || die 'invalid slot'
+		lock_state
+		read_state || die 'state is missing or invalid'
+		[ "$booting" = "$slot" ] || die 'slot is not the current boot attempt'
+		booting=none
+		if [ "$pending" = "$slot" ]; then
+			pending=none
+			last_result=pending-invalid
+		else
+			force_recovery=1
+			last_result=active-invalid
+		fi
+		write_state
+		;;
+	accept)
+		[ "$#" -eq 2 ] || die 'usage: bootstate accept SLOT'
+		slot=$2
+		valid_slot "$slot" && [ "$slot" != none ] || die 'invalid slot'
+		lock_state
+		read_state || die 'state is missing or invalid'
+		[ "$booting" = "$slot" ] || die 'slot is not the current boot attempt'
+		[ "$pending" = none ] || [ "$pending" = "$slot" ] ||
+			die 'another slot is pending'
+		active=$slot
+		pending=none
+		booting=none
+		force_recovery=0
+		last_result=accepted
+		write_state
+		;;
+	stage)
+		[ "$#" -eq 2 ] || die 'usage: bootstate stage SLOT'
+		slot=$2
+		valid_slot "$slot" && [ "$slot" != none ] || die 'invalid slot'
+		lock_state
+		read_state || die 'state is missing or invalid'
+		[ "$booting" = none ] || die 'current boot has not been accepted yet'
+		[ "$slot" != "$active" ] || die 'refusing to stage over the active slot'
+		pending=$slot
+		force_recovery=0
+		last_result=staged
+		write_state
+		;;
+	activate)
+		[ "$#" -eq 2 ] || die 'usage: bootstate activate SLOT'
+		slot=$2
+		valid_slot "$slot" && [ "$slot" != none ] || die 'invalid slot'
+		lock_state
+		read_state || default_state
+		active=$slot
+		pending=none
+		booting=none
+		force_recovery=0
+		last_result=repaired
+		write_state
+		;;
+	recovery)
+		lock_state
+		read_state || default_state
+		booting=none
+		force_recovery=1
+		last_result=manual-recovery
+		write_state
+		;;
+	retry)
+		lock_state
+		read_state || die 'state is missing or invalid'
+		pending=none
+		booting=none
+		force_recovery=0
+		last_result=manual-retry
+		write_state
+		;;
+	*)
+		die 'commands: status, prepare, reject SLOT, accept SLOT, stage SLOT, activate SLOT, recovery, retry'
+		;;
+esac

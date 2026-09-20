@@ -1,0 +1,235 @@
+#!/bin/sh
+# Emit a compact, read-only operational snapshot for the RG-MA2820 dashboard.
+
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+RELEASE_FILE=${RG_MA2820_RELEASE_FILE:-/etc/rg-ma2820/release}
+RECOVERY_MARKER=${RG_MA2820_RECOVERY_MARKER:-/etc/rg-ma2820/recovery-root}
+BOOTSTATE=${RG_MA2820_BOOTSTATE:-/usr/libexec/rg-ma2820/bootstate}
+PROC_ROOT=${RG_MA2820_PROC_ROOT:-/proc}
+SYS_ROOT=${RG_MA2820_SYS_ROOT:-/sys}
+JSHN=${RG_MA2820_JSHN:-/usr/share/libubox/jshn.sh}
+IP=${RG_MA2820_IP:-ip}
+DF=${RG_MA2820_DF:-df}
+PIDOF=${RG_MA2820_PIDOF:-pidof}
+DATE=${RG_MA2820_DATE:-date}
+UNAME=${RG_MA2820_UNAME:-uname}
+RESOLV_FILE=${RG_MA2820_RESOLV_FILE:-/tmp/resolv.conf.d/resolv.conf.auto}
+INIT_ROOT=${RG_MA2820_INIT_ROOT:-/etc/init.d}
+LED_STATE=${RG_MA2820_LED_STATE:-/var/run/rg-ma2820-led.state}
+
+[ -r "$DEVICE_ENV" ] || exit 1
+[ -r "$JSHN" ] || exit 1
+. "$DEVICE_ENV"
+. "$JSHN"
+
+read_value()
+{
+	tr -d '\000\r\n' < "$1" 2>/dev/null
+}
+
+number_or_zero()
+{
+	echo "$1" | grep -Eq '^[0-9]+$' && printf '%s\n' "$1" || printf '0\n'
+}
+
+state_value()
+{
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+stat_value()
+{
+	number_or_zero "$(read_value "$SYS_ROOT/class/net/$1/statistics/$2")"
+}
+
+service_process()
+{
+	$PIDOF "$1" >/dev/null 2>&1
+}
+
+service_init()
+{
+	"$INIT_ROOT/$1" status >/dev/null 2>&1
+}
+
+add_service()
+{
+	local id="$1" kind="$2" target="$3" running=0
+	case "$kind" in
+		process) service_process "$target" && running=1 ;;
+		init) service_init "$target" && running=1 ;;
+	esac
+	json_add_object ''
+	json_add_string id "$id"
+	[ "$running" = 1 ] && json_add_boolean running 1 || json_add_boolean running 0
+	json_close_object
+}
+
+bootstate="$($BOOTSTATE status 2>/dev/null)"
+active_slot="$(state_value "$bootstate" active)"
+pending_slot="$(state_value "$bootstate" pending)"
+trial_slot="$(state_value "$bootstate" booting)"
+last_result="$(state_value "$bootstate" last_result)"
+rom_device="$(awk '$2 == "/rom" { print $1; exit }' "$PROC_ROOT/mounts" 2>/dev/null)"
+case "$rom_device" in
+	/dev/ubiblock0_4) running_slot=a ;;
+	/dev/ubiblock0_5) running_slot=b ;;
+	*) [ -e "$RECOVERY_MARKER" ] && running_slot=recovery || running_slot=unknown ;;
+esac
+
+uptime_seconds="$(cut -d. -f1 "$PROC_ROOT/uptime" 2>/dev/null)"
+set -- $(head -n 1 "$PROC_ROOT/loadavg" 2>/dev/null)
+load_1=${1:-0}
+load_5=${2:-0}
+load_15=${3:-0}
+mem_total_kb="$(awk '$1 == "MemTotal:" { print $2; exit }' "$PROC_ROOT/meminfo" 2>/dev/null)"
+mem_available_kb="$(awk '$1 == "MemAvailable:" { print $2; exit }' "$PROC_ROOT/meminfo" 2>/dev/null)"
+[ -n "$mem_available_kb" ] || mem_available_kb="$(awk '
+	$1 == "MemFree:" || $1 == "Buffers:" || $1 == "Cached:" { total += $2 }
+	END { print total + 0 }' "$PROC_ROOT/meminfo" 2>/dev/null)"
+temperature_mc="$(read_value "$SYS_ROOT/class/thermal/thermal_zone0/temp")"
+thermal_trip_mc=0
+for trip_file in "$SYS_ROOT"/class/thermal/thermal_zone0/trip_point_*_temp; do
+	[ -f "$trip_file" ] || continue
+	trip_value="$(number_or_zero "$(read_value "$trip_file")")"
+	[ "$trip_value" -ge 80000 ] || continue
+	[ "$thermal_trip_mc" -ne 0 ] && [ "$trip_value" -ge "$thermal_trip_mc" ] ||
+		thermal_trip_mc=$trip_value
+done
+
+set -- $($DF -kP /overlay 2>/dev/null | awk 'NR == 2 { print $2, $3, $4 }')
+overlay_total_kb=${1:-0}
+overlay_used_kb=${2:-0}
+overlay_available_kb=${3:-0}
+
+management_cidr="$($IP -4 addr show dev br-lan 2>/dev/null |
+	sed -n 's/.*inet \([0-9.]*\/[0-9][0-9]*\).*/\1/p' |
+	grep -v "^$RESCUE_LINK_LOCAL/" | head -n 1)"
+gateway="$($IP -4 route show default 2>/dev/null |
+	sed -n 's/^default via \([^ ]*\).*/\1/p' | head -n 1)"
+dns_server="$(awk '$1 == "nameserver" { print $2; exit }' "$RESOLV_FILE" 2>/dev/null)"
+bridge_mac="$(read_value "$SYS_ROOT/class/net/br-lan/address")"
+led_state="$(cat "$LED_STATE" 2>/dev/null)"
+wan_color_mode="$(state_value "$led_state" WAN_COLOR_MODE)"
+case "$wan_color_mode" in direction|green) ;; *) wan_color_mode=green ;; esac
+
+json_init
+json_add_int timestamp "$(number_or_zero "$($DATE +%s 2>/dev/null)")"
+json_add_string timezone "$($DATE +%Z 2>/dev/null)"
+
+json_add_object identity
+json_add_string model 'RG-MA2820(T)'
+json_add_string device_id "$DEVICE_ID"
+json_add_string hostname "$HOSTNAME"
+json_add_string peer_id "$PEER_ID"
+json_add_string peer_hostname "$PEER_HOSTNAME"
+json_add_string release "$(read_value "$RELEASE_FILE")"
+json_add_string kernel "$($UNAME -r 2>/dev/null)"
+json_add_string project "$(read_value "$PROC_ROOT/nvram/projectid")"
+json_add_string board "$(read_value "$PROC_ROOT/nvram/boardid")"
+json_add_string product "$(read_value "$PROC_ROOT/nvram/productid")"
+json_add_string base_mac "$(read_value "$PROC_ROOT/nvram/BaseMacAddr")"
+json_close_object
+
+json_add_object system
+json_add_int uptime "$(number_or_zero "$uptime_seconds")"
+json_add_string load_1 "$load_1"
+json_add_string load_5 "$load_5"
+json_add_string load_15 "$load_15"
+json_add_int memory_total_kb "$(number_or_zero "$mem_total_kb")"
+json_add_int memory_available_kb "$(number_or_zero "$mem_available_kb")"
+json_add_int temperature_mc "$(number_or_zero "$temperature_mc")"
+json_add_int thermal_trip_mc "$thermal_trip_mc"
+json_add_int overlay_total_kb "$(number_or_zero "$overlay_total_kb")"
+json_add_int overlay_used_kb "$(number_or_zero "$overlay_used_kb")"
+json_add_int overlay_available_kb "$(number_or_zero "$overlay_available_kb")"
+json_close_object
+
+json_add_object boot
+json_add_string running_slot "${running_slot:-unknown}"
+json_add_string accepted_slot "${active_slot:-unknown}"
+json_add_string pending_slot "${pending_slot:-none}"
+json_add_string trial_slot "${trial_slot:-none}"
+json_add_string last_result "${last_result:-unknown}"
+json_add_string rom_device "${rom_device:-unknown}"
+json_add_int boot_counter "$(number_or_zero "$(read_value "$PROC_ROOT/nvram/ap_upgrade_num")")"
+json_add_int bad_peb_count "$(number_or_zero "$(read_value "$SYS_ROOT/class/ubi/ubi0/bad_peb_count")")"
+[ -e "$RECOVERY_MARKER" ] && json_add_boolean recovery 1 || json_add_boolean recovery 0
+json_close_object
+
+json_add_object network
+json_add_string management_cidr "${management_cidr:-}"
+json_add_string rescue_cidr "$RESCUE_LINK_LOCAL/16"
+json_add_string gateway "${gateway:-}"
+json_add_string dns_server "${dns_server:-}"
+json_add_string bridge_mac "${bridge_mac:-}"
+json_add_int rx_bytes "$(stat_value br-lan rx_bytes)"
+json_add_int tx_bytes "$(stat_value br-lan tx_bytes)"
+json_add_int rx_packets "$(stat_value br-lan rx_packets)"
+json_add_int tx_packets "$(stat_value br-lan tx_packets)"
+json_add_int rx_errors "$(stat_value br-lan rx_errors)"
+json_add_int tx_errors "$(stat_value br-lan tx_errors)"
+json_add_int rx_dropped "$(stat_value br-lan rx_dropped)"
+json_add_int tx_dropped "$(stat_value br-lan tx_dropped)"
+json_close_object
+
+json_add_array ports
+port_index=0
+for interface in eth0 eth1 eth2 eth3 eth4; do
+	case "$interface" in
+		eth0) label=WAN ;;
+		eth1) label=LAN1 ;;
+		eth2) label=LAN2 ;;
+		eth3) label=LAN3 ;;
+		eth4) label=LAN4 ;;
+	esac
+	carrier="$(number_or_zero "$(read_value "$SYS_ROOT/class/net/$interface/carrier")")"
+	json_add_object ''
+	json_add_int index "$port_index"
+	json_add_string interface "$interface"
+	json_add_string label "$label"
+	[ "$carrier" = 1 ] && json_add_boolean link 1 || json_add_boolean link 0
+	json_add_string state "$(read_value "$SYS_ROOT/class/net/$interface/operstate")"
+	json_add_int speed_mbps "$(number_or_zero "$(read_value "$SYS_ROOT/class/net/$interface/speed")")"
+	json_add_string duplex "$(read_value "$SYS_ROOT/class/net/$interface/duplex")"
+	json_add_int bridge_state "$(number_or_zero "$(read_value "$SYS_ROOT/class/net/$interface/brport/state")")"
+	json_add_int rx_bytes "$(stat_value "$interface" rx_bytes)"
+	json_add_int tx_bytes "$(stat_value "$interface" tx_bytes)"
+	json_add_int rx_errors "$(stat_value "$interface" rx_errors)"
+	json_add_int tx_errors "$(stat_value "$interface" tx_errors)"
+	json_add_int rx_dropped "$(stat_value "$interface" rx_dropped)"
+	json_add_int tx_dropped "$(stat_value "$interface" tx_dropped)"
+	json_close_object
+	port_index=$((port_index + 1))
+done
+json_close_array
+
+json_add_object leds
+json_add_int updated "$(number_or_zero "$(state_value "$led_state" UPDATED)")"
+json_add_string power "$(state_value "$led_state" POWER)"
+json_add_string uplink "$(state_value "$led_state" UPLINK)"
+json_add_string wan "$(state_value "$led_state" WAN)"
+json_add_string wan_color_mode "$wan_color_mode"
+json_add_string lan "$(state_value "$led_state" LAN)"
+json_add_string wifi "$(state_value "$led_state" WIFI)"
+json_add_string mesh "$(state_value "$led_state" MESH)"
+json_add_int carrier "$(number_or_zero "$(state_value "$led_state" CARRIER)")"
+json_add_int wan_carrier "$(number_or_zero "$(state_value "$led_state" WAN_CARRIER)")"
+json_add_int lan_carrier "$(number_or_zero "$(state_value "$led_state" LAN_CARRIER)")"
+json_add_int gateway_reachable "$(number_or_zero "$(state_value "$led_state" GATEWAY_REACHABLE)")"
+json_add_int radios_ready "$(number_or_zero "$(state_value "$led_state" RADIOS_READY)")"
+json_add_int radios_expected "$(number_or_zero "$(state_value "$led_state" RADIOS_EXPECTED)")"
+json_add_int peer_online "$(number_or_zero "$(state_value "$led_state" PEER_ONLINE)")"
+json_close_object
+
+json_add_array services
+add_service ssh process dropbear
+add_service web process uhttpd
+add_service rpc process rpcd
+add_service time process ntpd
+add_service leds init rg-ma2820-leds
+add_service neighbor_sync init rg-ma2820-neighbor-sync
+add_service roaming init rg-ma2820-roaming
+json_close_array
+
+json_dump

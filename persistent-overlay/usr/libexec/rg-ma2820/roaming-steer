@@ -1,0 +1,252 @@
+#!/bin/sh
+# RSSI-triggered 802.11v steering for the wired RG-MA2820 AP pair.
+
+set -u
+
+WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+PEER_STATE_FILE=${RG_MA2820_PEER_WIFI_STATE:-/var/run/rg-ma2820-peer-wifi.state}
+STATE_DIR=${RG_MA2820_ROAM_STATE_DIR:-/var/run/rg-ma2820-roaming}
+EVENT_FILE=${RG_MA2820_ROAM_EVENTS:-/var/run/rg-ma2820-roaming.events}
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
+HOSTAPD_CTRL=${RG_MA2820_HOSTAPD_CTRL:-/var/run/hostapd}
+PING=${RG_MA2820_PING:-ping}
+
+[ -r "$WIFI_ENV" ] || exit 0
+[ -r "$DEVICE_ENV" ] || exit 0
+. "$WIFI_ENV"
+. "$DEVICE_ENV"
+
+ROAM_STEERING=${ROAM_STEERING:-1}
+ROAM_BAND_2G=${ROAM_BAND_2G:-0}
+ROAM_BAND_5G=${ROAM_BAND_5G:-1}
+ROAM_INTERVAL=${ROAM_INTERVAL:-4}
+ROAM_RSSI_TRIGGER=${ROAM_RSSI_TRIGGER:--72}
+ROAM_RSSI_HARD=${ROAM_RSSI_HARD:--82}
+ROAM_RSSI_SAMPLES=${ROAM_RSSI_SAMPLES:-3}
+ROAM_COOLDOWN=${ROAM_COOLDOWN:-60}
+ROAM_MIN_ASSOC_AGE=${ROAM_MIN_ASSOC_AGE:-15}
+ROAM_HARD_FALLBACK=${ROAM_HARD_FALLBACK:-1}
+ROAM_HARD_DELAY=${ROAM_HARD_DELAY:-12}
+ROAM_HARD_WINDOW=${ROAM_HARD_WINDOW:-45}
+
+state_value()
+{
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+valid_mac()
+{
+	echo "$1" | grep -Eq '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+}
+
+valid_number()
+{
+	echo "$1" | grep -Eq '^-?[0-9]+$'
+}
+
+configuration_valid()
+{
+	valid_number "$ROAM_INTERVAL" && [ "$ROAM_INTERVAL" -ge 2 ] &&
+	valid_number "$ROAM_RSSI_TRIGGER" && [ "$ROAM_RSSI_TRIGGER" -le -50 ] &&
+		[ "$ROAM_RSSI_TRIGGER" -ge -90 ] &&
+	valid_number "$ROAM_RSSI_HARD" && [ "$ROAM_RSSI_HARD" -lt "$ROAM_RSSI_TRIGGER" ] &&
+		[ "$ROAM_RSSI_HARD" -ge -95 ] &&
+	valid_number "$ROAM_RSSI_SAMPLES" && [ "$ROAM_RSSI_SAMPLES" -ge 1 ] &&
+	valid_number "$ROAM_COOLDOWN" && [ "$ROAM_COOLDOWN" -ge 15 ] &&
+	valid_number "$ROAM_MIN_ASSOC_AGE" && [ "$ROAM_MIN_ASSOC_AGE" -ge 0 ] &&
+	valid_number "$ROAM_HARD_DELAY" && [ "$ROAM_HARD_DELAY" -ge 5 ] &&
+	valid_number "$ROAM_HARD_WINDOW" && [ "$ROAM_HARD_WINDOW" -gt "$ROAM_HARD_DELAY" ] &&
+	case "$ROAM_HARD_FALLBACK:$ROAM_BAND_2G:$ROAM_BAND_5G" in
+		[01]:[01]:[01]) true ;; *) false ;;
+	esac
+}
+
+log_event()
+{
+	local message="$*" lines
+	logger -t rg-ma2820-roaming "$message"
+	printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$message" >> "$EVENT_FILE"
+	lines="$(wc -l < "$EVENT_FILE" 2>/dev/null)"
+	[ "${lines:-0}" -le 200 ] || {
+		tail -n 100 "$EVENT_FILE" > "$EVENT_FILE.new" &&
+			mv -f "$EVENT_FILE.new" "$EVENT_FILE"
+	}
+}
+
+peer_ready()
+{
+	local state
+	[ -s "$PEER_STATE_FILE" ] || return 1
+	state="$(cat "$PEER_STATE_FILE" 2>/dev/null)" || return 1
+	[ "$(state_value "$state" PROFILE)" = wired-mesh ] || return 1
+	valid_mac "$(state_value "$state" BSSID_5G)" || return 1
+	"$PING" -c 1 -W 1 "$PEER_LINK_LOCAL" >/dev/null 2>&1
+}
+
+station_file()
+{
+	local interface="$1" mac="$2" suffix="$3"
+	printf '%s/%s_%s.%s\n' "$STATE_DIR" "$interface" "$(echo "$mac" | tr -d ':')" "$suffix"
+}
+
+station_age()
+{
+	printf '%s\n' "$1" |
+		sed -n 's/^[[:space:]]*in network \([0-9][0-9]*\) seconds.*/\1/p' |
+		head -n 1
+}
+
+station_supports_btm()
+{
+	printf '%s\n' "$1" | grep -q 'BSS-Transition'
+}
+
+send_soft_request()
+{
+	local interface="$1" mac="$2" result
+	result="$($HOSTAPD_CLI -p "$HOSTAPD_CTRL" -i "$interface" \
+		bss_tm_req "$mac" pref=1 abridged=1 valid_int=10 2>/dev/null)" || return 1
+	[ "$result" = OK ]
+}
+
+send_hard_request()
+{
+	local interface="$1" mac="$2" supports_btm="$3" result
+	if [ "$supports_btm" = 1 ]; then
+		result="$($HOSTAPD_CLI -p "$HOSTAPD_CTRL" -i "$interface" \
+			bss_tm_req "$mac" pref=1 abridged=1 valid_int=10 \
+			disassoc_imminent=1 disassoc_timer=100 2>/dev/null)" || return 1
+	else
+		result="$($HOSTAPD_CLI -p "$HOSTAPD_CTRL" -i "$interface" \
+			deauthenticate "$mac" reason=5 2>/dev/null)" || return 1
+	fi
+	[ "$result" = OK ]
+}
+
+inspect_station()
+{
+	local interface="$1" mac="$2" now="$3"
+	local rssi info age count count_file soft_file last_file soft_at last_at
+	local supports_btm=0
+
+	mac="$(echo "$mac" | tr 'A-F' 'a-f')"
+	valid_mac "$mac" || return 0
+	rssi="$($WL -i "$interface" rssi "$mac" 2>/dev/null)" || return 0
+	valid_number "$rssi" || return 0
+	info="$($WL -i "$interface" sta_info "$mac" 2>/dev/null)" || return 0
+	age="$(station_age "$info")"
+	valid_number "$age" || age=0
+	station_supports_btm "$info" && supports_btm=1
+
+	count_file="$(station_file "$interface" "$mac" weak)"
+	soft_file="$(station_file "$interface" "$mac" soft)"
+	last_file="$(station_file "$interface" "$mac" last)"
+
+	if [ "$rssi" -gt "$ROAM_RSSI_TRIGGER" ]; then
+		rm -f "$count_file" "$soft_file"
+		return 0
+	fi
+
+	count="$(cat "$count_file" 2>/dev/null)"
+	valid_number "$count" || count=0
+	count=$((count + 1))
+	printf '%s\n' "$count" > "$count_file"
+	[ "$age" -ge "$ROAM_MIN_ASSOC_AGE" ] || return 0
+	peer_ready || return 0
+
+	soft_at="$(cat "$soft_file" 2>/dev/null)"
+	valid_number "$soft_at" || soft_at=0
+	last_at="$(cat "$last_file" 2>/dev/null)"
+	valid_number "$last_at" || last_at=0
+
+	if [ "$ROAM_HARD_FALLBACK" = 1 ] && [ "$rssi" -le "$ROAM_RSSI_HARD" ] &&
+		[ "$soft_at" -gt 0 ] && [ $((now - soft_at)) -ge "$ROAM_HARD_DELAY" ] &&
+		[ $((now - soft_at)) -le "$ROAM_HARD_WINDOW" ]; then
+		if send_hard_request "$interface" "$mac" "$supports_btm"; then
+			printf '%s\n' "$now" > "$last_file"
+			rm -f "$soft_file" "$count_file"
+			log_event "hard interface=$interface sta=$mac rssi=$rssi btm=$supports_btm"
+		fi
+		return 0
+	fi
+
+	[ "$soft_at" -eq 0 ] || [ $((now - soft_at)) -le "$ROAM_HARD_WINDOW" ] ||
+		rm -f "$soft_file"
+	[ "$count" -ge "$ROAM_RSSI_SAMPLES" ] || return 0
+	[ $((now - last_at)) -ge "$ROAM_COOLDOWN" ] || return 0
+	if send_soft_request "$interface" "$mac"; then
+		printf '%s\n' "$now" > "$soft_file"
+		printf '%s\n' "$now" > "$last_file"
+		printf '0\n' > "$count_file"
+		log_event "soft interface=$interface sta=$mac rssi=$rssi btm=$supports_btm"
+	fi
+}
+
+inspect_interface()
+{
+	local interface="$1" now="$2" mac
+	[ -e "$HOSTAPD_CTRL/$interface" ] || return 0
+	for mac in $($WL -i "$interface" assoclist 2>/dev/null | sed -n 's/^assoclist //p'); do
+		inspect_station "$interface" "$mac" "$now"
+	done
+}
+
+run_once()
+{
+	local now
+	[ "${WIFI_PROFILE:-factory}" = wired-mesh ] || return 0
+	[ "$ROAM_STEERING" = 1 ] || return 0
+	now="$(date +%s)"
+	[ "$ROAM_BAND_2G" != 1 ] || inspect_interface wl0 "$now"
+	if [ "$ROAM_BAND_5G" = 1 ]; then
+		inspect_interface wl1 "$now"
+		inspect_interface wl1.1 "$now"
+	fi
+}
+
+manual_steer()
+{
+	local interface="$1" mac
+	mac="$(echo "$2" | tr 'A-F' 'a-f')"
+	case "$interface" in wl0|wl1|wl1.1) ;; *) return 2 ;; esac
+	valid_mac "$mac" || return 2
+	[ -e "$HOSTAPD_CTRL/$interface" ] || return 1
+	peer_ready || return 1
+	if send_soft_request "$interface" "$mac"; then
+		log_event "manual interface=$interface sta=$mac"
+		return 0
+	fi
+	return 1
+}
+
+configuration_valid || {
+	logger -t rg-ma2820-roaming 'invalid steering configuration; service disabled'
+	exit 1
+}
+mkdir -p "$STATE_DIR"
+umask 077
+
+case "${1:-}" in
+	--once)
+		run_once
+		exit 0
+		;;
+	--steer)
+		[ "$#" -eq 3 ] || exit 2
+		manual_steer "$2" "$3"
+		exit $?
+		;;
+	'') ;;
+	*) exit 2 ;;
+esac
+[ "${RG_MA2820_ROAM_ONCE:-0}" != 1 ] || {
+	run_once
+	exit 0
+}
+
+while true; do
+	run_once
+	sleep "$ROAM_INTERVAL"
+done

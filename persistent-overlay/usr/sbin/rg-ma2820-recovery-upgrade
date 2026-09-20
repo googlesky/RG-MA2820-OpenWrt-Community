@@ -1,0 +1,277 @@
+#!/bin/sh
+# Rewrite immutable recovery volume 0 with an authenticated, fully checked image.
+# This is maintenance-only: normal firmware updates must use the A/B updater.
+
+set -eu
+
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+RECOVERY_MARKER=${RG_MA2820_RECOVERY_MARKER:-/etc/rg-ma2820/recovery-root}
+VOLUME=${RG_MA2820_RECOVERY_VOLUME:-/dev/ubi0_0}
+BLOCK=${RG_MA2820_RECOVERY_BLOCK:-/dev/ubiblock0_0}
+CAPACITY_FILE=${RG_MA2820_RECOVERY_CAPACITY_FILE:-/sys/class/ubi/ubi0_0/data_bytes}
+MOUNTPOINT=${RG_MA2820_RECOVERY_MOUNTPOINT:-/tmp/rg-ma2820-recovery-check}
+MOUNTS_FILE=${RG_MA2820_MOUNTS_FILE:-/proc/mounts}
+MEMINFO=${RG_MA2820_MEMINFO:-/proc/meminfo}
+UBIUPDATEVOL=${RG_MA2820_UBIUPDATEVOL:-ubiupdatevol}
+UBIBLOCK=${RG_MA2820_UBIBLOCK:-ubiblock}
+MOUNT=${RG_MA2820_MOUNT:-mount}
+UMOUNT=${RG_MA2820_UMOUNT:-umount}
+ID=${RG_MA2820_ID:-id}
+BACKUP=${RG_MA2820_RECOVERY_BACKUP:-/tmp/rg-ma2820-recovery-before-upgrade.$$}
+
+mounted=0
+block_created=0
+restore_pending=0
+backup_hash=
+
+die()
+{
+	echo "rg-ma2820-recovery-upgrade: $*" >&2
+	exit 1
+}
+
+usage()
+{
+	cat >&2 <<'EOF'
+usage: rg-ma2820-recovery-upgrade IMAGE SHA256 RELEASE --yes
+
+This rewrites immutable UBI volume 0. A power failure during the write can
+require UART recovery. Use the device-specific recovery image and keep power
+stable until the command reports success.
+EOF
+	exit 2
+}
+
+volume_prefix_hash()
+{
+	dd if="$VOLUME" bs=4096 2>/dev/null |
+		head -c "$1" | sha256sum | cut -d' ' -f1
+}
+
+remove_owned_block()
+{
+	[ "$mounted" = 0 ] || {
+		"$UMOUNT" "$MOUNTPOINT" >/dev/null 2>&1 || true
+		mounted=0
+	}
+	[ "$block_created" = 0 ] || {
+		"$UBIBLOCK" --remove "$VOLUME" >/dev/null 2>&1 || true
+		block_created=0
+	}
+}
+
+restore_backup()
+{
+	echo 'Recovery verification failed; restoring the byte-for-byte backup.' >&2
+	"$UBIUPDATEVOL" "$VOLUME" "$BACKUP" >/dev/null || return 1
+	sync
+	restored_hash=$(sha256sum "$VOLUME" | cut -d' ' -f1)
+	[ "$restored_hash" = "$backup_hash" ] || return 1
+	"$UBIBLOCK" --create "$VOLUME" >/dev/null || return 1
+	echo "Original recovery restored and read back: $restored_hash" >&2
+}
+
+on_exit()
+{
+	rc=$?
+	trap - EXIT INT TERM
+	remove_owned_block
+	if [ "$restore_pending" = 1 ]; then
+		if ! restore_backup; then
+			echo 'CRITICAL: automatic recovery restore failed; do not reboot.' >&2
+			rc=1
+		fi
+	fi
+	exit "$rc"
+}
+
+trap on_exit EXIT
+trap 'exit 130' INT TERM
+
+[ "$#" -eq 4 ] || usage
+image=$1
+expected_hash=$2
+expected_release=$3
+[ "$4" = --yes ] || usage
+
+[ "$("$ID" -u)" = 0 ] || die 'must run as root'
+[ -f "$image" ] || die "not a regular file: $image"
+[ -f "$DEVICE_ENV" ] || die "missing device identity: $DEVICE_ENV"
+[ ! -e "$RECOVERY_MARKER" ] || die 'refusing to rewrite recovery while running from recovery'
+[ "$image" != "$BACKUP" ] || die 'image and backup paths must differ'
+[ ! -e "$BACKUP" ] || die "backup path already exists: $BACKUP"
+
+case "$expected_hash" in
+	*[!0-9a-f]*|'') die 'SHA256 must be 64 lowercase hexadecimal characters' ;;
+esac
+[ "${#expected_hash}" -eq 64 ] ||
+	die 'SHA256 must be 64 lowercase hexadecimal characters'
+case "$expected_release" in
+	r[0-9]*) ;;
+	*) die 'release must be an r-number' ;;
+esac
+case "${expected_release#r}" in
+	''|*[!0-9]*) die 'release must be an r-number' ;;
+esac
+
+# This file is part of the trusted running system. Candidate files are parsed,
+# never sourced, because they are untrusted until all checks have passed.
+. "$DEVICE_ENV"
+case "$DEVICE_ID" in
+	ap2|ap3) ;;
+	*) die "unsupported device identity: ${DEVICE_ID:-missing}" ;;
+esac
+expected_rescue=${RESCUE_LINK_LOCAL:-}
+expected_peer=${PEER_LINK_LOCAL:-}
+factory_hash=${FACTORY_ROOT_HASH:-}
+[ -n "$expected_rescue" ] && [ -n "$expected_peer" ] ||
+	die 'running system has incomplete recovery addressing'
+[ -n "$factory_hash" ] || die 'running system has no trusted factory credential hash'
+[ -n "${FACTORY_SSID_BASE:-}" ] && [ -n "${FACTORY_WIFI_SECURITY:-}" ] ||
+	die 'running system has incomplete factory Wi-Fi metadata'
+[ -n "${FACTORY_COUNTRY_CODE:-}" ] ||
+	die 'running system has no trusted factory country profile'
+[ "${SYSTEM_FORMAT:-}" = 2 ] || die 'unsupported running system format'
+[ "${RESCUE_LINK_LOCAL:-}" = "$expected_rescue" ] ||
+	die 'running system has an unexpected rescue address'
+[ "${PEER_LINK_LOCAL:-}" = "$expected_peer" ] ||
+	die 'running system has an unexpected peer address'
+
+actual_hash=$(sha256sum "$image" | cut -d' ' -f1)
+[ "$actual_hash" = "$expected_hash" ] || die 'input SHA256 does not match'
+magic=$(hexdump -n 4 -v -e '4/1 "%02x"' "$image")
+[ "$magic" = 68737173 ] || die 'image is not a little-endian SquashFS'
+
+size=$(wc -c < "$image")
+capacity=$(cat "$CAPACITY_FILE" 2>/dev/null || true)
+case "$capacity" in ''|*[!0-9]*) die 'cannot determine recovery-volume capacity' ;; esac
+[ "$size" -gt 0 ] || die 'image is empty'
+[ "$size" -le "$capacity" ] || die "image is too large ($size > $capacity)"
+[ -c "$VOLUME" ] || [ -f "$VOLUME" ] || die "recovery volume is missing: $VOLUME"
+
+if awk -v block="$BLOCK" -v target="$MOUNTPOINT" \
+	'$1 == block || $2 == target { found=1 } END { exit !found }' "$MOUNTS_FILE"; then
+	die 'recovery block or verification mountpoint is still mounted'
+fi
+
+# The backup is the complete logical UBI volume, not merely the SquashFS
+# prefix. Keep enough RAM for it plus verification and normal services.
+available_kb=$(awk '$1 == "MemAvailable:" { print $2; exit }' "$MEMINFO")
+case "$available_kb" in ''|*[!0-9]*) die 'cannot determine available memory' ;; esac
+required_kb=$((capacity / 1024 + 16384))
+[ "$available_kb" -ge "$required_kb" ] ||
+	die "not enough free memory for safe backup ($available_kb < $required_kb KiB)"
+
+umask 077
+echo "Backing up all $capacity bytes of immutable recovery before writing."
+dd if="$VOLUME" of="$BACKUP" bs=4096 2>/dev/null
+[ "$(wc -c < "$BACKUP")" -eq "$capacity" ] || die 'recovery backup is incomplete'
+backup_hash=$(sha256sum "$BACKUP" | cut -d' ' -f1)
+
+"$UBIBLOCK" --remove "$VOLUME" >/dev/null 2>&1 ||
+	[ ! -e "$BLOCK" ] || die 'cannot detach recovery block device'
+
+restore_pending=1
+echo 'Writing immutable recovery; do not interrupt power.'
+"$UBIUPDATEVOL" "$VOLUME" "$image"
+sync
+
+readback_hash=$(volume_prefix_hash "$size")
+[ "$readback_hash" = "$actual_hash" ] || die 'recovery NAND readback hash mismatch'
+
+"$UBIBLOCK" --create "$VOLUME" >/dev/null
+block_created=1
+mkdir -p "$MOUNTPOINT"
+"$MOUNT" -t squashfs -o ro "$BLOCK" "$MOUNTPOINT" ||
+	die 'the running vendor kernel cannot mount the new recovery image'
+mounted=1
+
+candidate_id=$(sed -n "s/^DEVICE_ID='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+candidate_format=$(sed -n "s/^SYSTEM_FORMAT='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+candidate_release=$(sed -n '1p' "$MOUNTPOINT/etc/rg-ma2820/release" 2>/dev/null)
+[ "$candidate_id" = "$DEVICE_ID" ] ||
+	die "recovery image belongs to ${candidate_id:-unknown}, not $DEVICE_ID"
+[ "$candidate_format" = "$SYSTEM_FORMAT" ] || die 'recovery system format is wrong'
+[ "$candidate_release" = "$expected_release" ] ||
+	die "recovery release is ${candidate_release:-missing}, not $expected_release"
+grep -qx "RESCUE_LINK_LOCAL='$expected_rescue'" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" || die 'recovery rescue address is wrong'
+grep -qx "PEER_LINK_LOCAL='$expected_peer'" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" || die 'recovery peer address is wrong'
+
+[ -e "$MOUNTPOINT/etc/rg-ma2820/recovery-root" ] || die 'recovery marker is missing'
+[ -x "$MOUNTPOINT/sbin/init" ] || die 'recovery init is not executable'
+[ -x "$MOUNTPOINT/sbin/init.openwrt" ] || die 'OpenWrt recovery init is missing'
+cmp -s "$MOUNTPOINT/sbin/init" "$MOUNTPOINT/sbin/rg-ma2820-bootstrap-init" ||
+	die 'recovery bootstrap init is inconsistent'
+[ -d "$MOUNTPOINT/.bootstrap" ] || die 'bootstrap pivot directory is missing'
+
+for executable in \
+	usr/libexec/rg-ma2820/bootstate \
+	usr/libexec/rg-ma2820/management-loop \
+	usr/libexec/rg-ma2820/reset-watch \
+	usr/sbin/rg-ma2820-factory-reset \
+	usr/sbin/rg-ma2820-peer \
+	usr/sbin/rg-ma2820-system-upgrade; do
+	[ -x "$MOUNTPOINT/$executable" ] || die "required recovery tool is missing: /$executable"
+done
+
+for hostkey in rsa ecdsa ed25519; do
+	[ -s "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" ] ||
+		die "Dropbear $hostkey host key is missing"
+	cmp -s "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" \
+		"/etc/dropbear/dropbear_${hostkey}_host_key" ||
+		die "Dropbear $hostkey host key belongs to another device"
+done
+
+authorized=$MOUNTPOINT/etc/dropbear/authorized_keys
+known_hosts=$MOUNTPOINT/root/.ssh/known_hosts
+cmp -s "$authorized" /etc/dropbear/authorized_keys ||
+	die 'peer-rescue authorization differs from the running trusted system'
+cmp -s "$known_hosts" /root/.ssh/known_hosts ||
+	die 'pinned peer host keys differ from the running trusted system'
+
+root_hash=$(awk -F: '$1 == "root" { print $2; exit }' "$MOUNTPOINT/etc/shadow")
+[ "$root_hash" = "$factory_hash" ] || die 'factory root credential is wrong'
+grep -qx "WIFI_PROFILE='factory'" "$MOUNTPOINT/etc/rg-ma2820/wifi.env" ||
+	die 'factory Wi-Fi profile is missing'
+grep -Fqx "SSID_BASE='$FACTORY_SSID_BASE'" "$MOUNTPOINT/etc/rg-ma2820/wifi.env" ||
+	die 'factory recovery SSID is wrong'
+grep -Fqx "WIFI_SECURITY='$FACTORY_WIFI_SECURITY'" "$MOUNTPOINT/etc/rg-ma2820/wifi.env" ||
+	die 'factory recovery Wi-Fi security is wrong'
+grep -Fqx "COUNTRY_CODE='$FACTORY_COUNTRY_CODE'" "$MOUNTPOINT/etc/rg-ma2820/wifi.env" ||
+	die 'factory recovery country profile is wrong'
+
+for path in \
+	etc/rc.d/S19dropbear \
+	etc/rc.d/S24rg-ma2820-reset-watch \
+	etc/rc.d/S25rg-ma2820-management \
+	etc/rc.d/S50uhttpd \
+	usr/share/rpcd/ucode/rg-ma2820.uc \
+	www/luci-static/resources/view/rg-ma2820/wireless.js; do
+	[ -e "$MOUNTPOINT/$path" ] || die "required recovery service is missing: /$path"
+done
+[ ! -L "$MOUNTPOINT/etc/rc.d/S60rg-ma2820-wifi" ] ||
+	die 'radio service must not autostart in wired recovery'
+[ ! -L "$MOUNTPOINT/etc/rc.d/S65rg-ma2820-neighbor-sync" ] ||
+	die 'neighbor sync must not autostart in wired recovery'
+[ ! -L "$MOUNTPOINT/etc/rc.d/S67rg-ma2820-roaming" ] ||
+	die 'roaming must not autostart in wired recovery'
+
+# Decode every regular-file block with the same 4.1.52 SquashFS implementation
+# that will boot it. This specifically guards against the r2 ARM-BCJ failure.
+tar -C "$MOUNTPOINT" -cf /dev/null . 2>/dev/null ||
+	die 'full recovery-filesystem read failed'
+
+"$UMOUNT" "$MOUNTPOINT"
+mounted=0
+# Keep the verified ubiblock mapping in the same state as normal operation.
+block_created=0
+restore_pending=0
+rm -f "$BACKUP"
+sync
+
+echo "Immutable $DEVICE_ID recovery $expected_release verified: $actual_hash"
+echo 'No boot state was changed. A separate controlled recovery boot is still required.'

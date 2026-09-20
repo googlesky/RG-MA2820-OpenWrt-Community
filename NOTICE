@@ -1,0 +1,12 @@
+This repository contains original integration code and patches distributed
+under GPL-2.0-only unless an individual file states another license.
+
+The OpenWrt source is referenced as a pinned upstream Git submodule and keeps
+its own license notices. Ruijie/RGOS and Broadcom firmware, drivers, tools,
+calibration data, and other proprietary material are not included.
+
+The test-only `jshn.sh` fixture is from OpenWrt libubox and is distributed
+under the ISC license reproduced in `LICENSES/ISC.txt`.
+
+Ruijie and Broadcom are trademarks of their respective owners. This project
+is independent and is not endorsed by either vendor.

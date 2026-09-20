@@ -1,0 +1,15 @@
+{
+	"luci-app-rg-ma2820": {
+		"description": "Manage RG-MA2820 vendor Wi-Fi and wired roaming",
+		"read": {
+			"ubus": {
+				"luci.rg-ma2820": [ "overview", "status", "capabilities", "scan", "timezone_status" ]
+			}
+		},
+		"write": {
+			"ubus": {
+				"luci.rg-ma2820": [ "configure", "action", "configure_timezone" ]
+			}
+		}
+	}
+}

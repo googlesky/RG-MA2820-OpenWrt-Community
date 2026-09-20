@@ -1,0 +1,248 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=99
+
+HEALTH_TIMEOUT=360
+STABLE_SECONDS=90
+CHECK_INTERVAL=10
+COUNTER=${RG_MA2820_COUNTER:-/proc/nvram/ap_upgrade_num}
+ACCEPTED_MARKER=${RG_MA2820_ACCEPTED_MARKER:-/etc/rg-ma2820/.boot-accepted}
+RECOVERY_ROOT=${RG_MA2820_RECOVERY_ROOT:-/etc/rg-ma2820/recovery-root}
+BOOTSTATE=${RG_MA2820_BOOTSTATE:-/usr/libexec/rg-ma2820/bootstate}
+HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
+HOSTAPD_5G_CONFIG=${RG_MA2820_HOSTAPD_5G_CONFIG:-/var/run/hostapd-wl1.conf}
+WIFI_STATE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
+WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+STATUS_HELPER=${RG_MA2820_STATUS_HELPER:-/usr/sbin/rg-ma2820-wifi-status}
+OVERVIEW_HELPER=${RG_MA2820_OVERVIEW_HELPER:-/usr/sbin/rg-ma2820-overview-status}
+CAPABILITY_HELPER=${RG_MA2820_CAPABILITY_HELPER:-/usr/sbin/rg-ma2820-wifi-capabilities}
+SCAN_HELPER=${RG_MA2820_SCAN_HELPER:-/usr/sbin/rg-ma2820-wifi-scan}
+TIMEZONE_HELPER=${RG_MA2820_TIMEZONE_HELPER:-/usr/sbin/rg-ma2820-timezone}
+TIMEZONE_DATABASE=${RG_MA2820_TIMEZONE_DATABASE:-/usr/share/ucode/luci/zoneinfo.uc}
+RPC_UCODE=${RG_MA2820_RPC_UCODE:-/usr/share/rpcd/ucode/rg-ma2820.uc}
+LUCI_MENU=${RG_MA2820_LUCI_MENU:-/usr/share/luci/menu.d/luci-app-rg-ma2820.json}
+LUCI_VIEW=${RG_MA2820_LUCI_VIEW:-/www/luci-static/resources/view/rg-ma2820/wireless.js}
+LUCI_OVERVIEW=${RG_MA2820_LUCI_OVERVIEW:-/www/luci-static/resources/view/status/index.js}
+LUCI_I18N_BASE=${RG_MA2820_LUCI_I18N_BASE:-/usr/lib/lua/luci/i18n/base.vi.lmo}
+LUCI_I18N_APP=${RG_MA2820_LUCI_I18N_APP:-/usr/lib/lua/luci/i18n/rg-ma2820.vi.lmo}
+ROAMING_INIT=${RG_MA2820_ROAMING_INIT:-/etc/init.d/rg-ma2820-roaming}
+RPC_INIT=${RG_MA2820_RPC_INIT:-/etc/init.d/rpcd}
+RPC_RELOAD_MARKER=${RG_MA2820_RPC_RELOAD_MARKER:-/var/run/rg-ma2820-rpc-reloads}
+RPC_RELOAD_DELAY=${RG_MA2820_RPC_RELOAD_DELAY:-2}
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+
+log()
+{
+	logger -t rg-ma2820-boot-success "$*"
+	echo "rg-ma2820-boot-success: $*" > /dev/console
+}
+
+ssh_listening()
+{
+	local table
+	for table in /proc/net/tcp /proc/net/tcp6; do
+		[ -r "$table" ] || continue
+		awk '$2 ~ /:0016$/ && $4 == "0A" { found=1 }
+			END { exit !found }' "$table" && return 0
+	done
+	return 1
+}
+
+management_healthy()
+{
+	ip -o link show br-lan 2>/dev/null |
+		sed -n 's/^[^<]*<\([^>]*\)>.*/\1/p' |
+		tr ',' '\n' | grep -qx UP &&
+		ip -4 addr show br-lan 2>/dev/null |
+			grep -q 'inet ' &&
+		pidof dropbear >/dev/null 2>&1 &&
+		ssh_listening
+}
+
+txpower_healthy()
+{
+	local interface="$1" target="$2" expected_qdbm
+	case "$target" in
+		auto) expected_qdbm=127 ;;
+		''|*[!0-9]*) return 1 ;;
+		*) expected_qdbm=$((target * 4)) ;;
+	esac
+	"$WL" -i "$interface" txpwr1 2>/dev/null |
+		grep -q "TxPower is $expected_qdbm qdbm"
+}
+
+rpc_api_healthy()
+{
+	local methods
+	methods="$(ubus -v list luci.rg-ma2820 2>/dev/null)" || return 1
+	printf '%s\n' "$methods" | grep -q '"timezone_status"' &&
+		printf '%s\n' "$methods" | grep -q '"configure_timezone"'
+}
+
+ensure_rpc_api()
+{
+	local attempts
+	rpc_api_healthy && return 0
+	attempts="$(cat "$RPC_RELOAD_MARKER" 2>/dev/null || echo 0)"
+	case "$attempts" in ''|*[!0-9]*) attempts=0 ;; esac
+	[ "$attempts" -lt 3 ] || return 1
+	mkdir -p "${RPC_RELOAD_MARKER%/*}" || return 1
+	echo $((attempts + 1)) > "$RPC_RELOAD_MARKER" || return 1
+	"$RPC_INIT" restart >/dev/null 2>&1 || return 1
+	sleep "$RPC_RELOAD_DELAY"
+	rpc_api_healthy
+}
+
+trial_system_healthy()
+{
+	local profile
+
+	[ -s "$WIFI_STATE" ] || return 1
+	profile="$(sed -n 's/^PROFILE=//p' "$WIFI_STATE" | head -n 1)"
+	case "$profile" in factory|wired-mesh) ;; *) return 1 ;; esac
+	. "$WIFI_ENV"
+	RADIO_2G_ENABLED=${RADIO_2G_ENABLED:-1}
+	RADIO_5G_ENABLED=${RADIO_5G_ENABLED:-1}
+	ENABLE_5G_LEGACY=${ENABLE_5G_LEGACY:-0}
+	[ "$RADIO_2G_ENABLED" != 1 ] ||
+		$HOSTAPD_CLI -p /var/run/hostapd -i wl0 status 2>/dev/null |
+			grep -q '^state=ENABLED$' || return 1
+	[ "$RADIO_5G_ENABLED" != 1 ] ||
+		$HOSTAPD_CLI -p /var/run/hostapd -i wl1 status 2>/dev/null |
+			grep -q '^state=ENABLED$' || return 1
+
+	pidof rpcd >/dev/null 2>&1 && pidof uhttpd >/dev/null 2>&1 || return 1
+	[ -x "$STATUS_HELPER" ] || return 1
+	[ -x "$OVERVIEW_HELPER" ] || return 1
+	[ -x "$CAPABILITY_HELPER" ] || return 1
+	[ -x "$SCAN_HELPER" ] || return 1
+	[ -x "$TIMEZONE_HELPER" ] || return 1
+	[ -s "$TIMEZONE_DATABASE" ] || return 1
+	[ -s "$RPC_UCODE" ] || return 1
+	[ -s "$LUCI_MENU" ] || return 1
+	[ -s "$LUCI_VIEW" ] || return 1
+	[ -s "$LUCI_OVERVIEW" ] || return 1
+	[ -s "$LUCI_I18N_BASE" ] || return 1
+	[ -s "$LUCI_I18N_APP" ] || return 1
+	ensure_rpc_api || return 1
+
+	[ "$profile" = wired-mesh ] || return 0
+	[ "$ENABLE_5G_LEGACY" != 1 ] ||
+		$HOSTAPD_CLI -p /var/run/hostapd -i wl1.1 status 2>/dev/null |
+			grep -q '^state=ENABLED$' || return 1
+	[ "$RADIO_5G_ENABLED" != 1 ] || [ -s "$HOSTAPD_5G_CONFIG" ] || return 1
+	"$ROAMING_INIT" status >/dev/null 2>&1 || return 1
+
+	[ "$RADIO_2G_ENABLED" != 1 ] ||
+		txpower_healthy wl0 "${TXPOWER_2G_DBM:-auto}" || return 1
+	[ "$RADIO_5G_ENABLED" != 1 ] ||
+		txpower_healthy wl1 "${TXPOWER_5G_DBM:-23}" || return 1
+}
+
+boot_health_mode()
+{
+	local state active pending booting
+	[ ! -e "$RECOVERY_ROOT" ] || {
+		echo recovery
+		return 0
+	}
+	state=$($BOOTSTATE status 2>/dev/null) || return 1
+	active=$(printf '%s\n' "$state" | sed -n 's/^active=//p')
+	pending=$(printf '%s\n' "$state" | sed -n 's/^pending=//p')
+	booting=$(printf '%s\n' "$state" | sed -n 's/^booting=//p')
+	case "$booting:$pending:$active" in
+		a:a:a|a:a:b|b:b:a|b:b:b) echo trial ;;
+		a:none:a|b:none:b|none:none:a|none:none:b) echo accepted ;;
+		*) return 1 ;;
+	esac
+}
+
+boot_healthy()
+{
+	local mode
+	[ -r "$COUNTER" ] && [ -w "$COUNTER" ] &&
+		management_healthy || return 1
+	mode=$(boot_health_mode) || return 1
+	case "$mode" in
+		trial) trial_system_healthy ;;
+		accepted|recovery) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+accept_boot()
+{
+	local state slot active already_accepted=0
+	if [ -e "$RECOVERY_ROOT" ]; then
+		slot=
+	else
+		state=$($BOOTSTATE status 2>/dev/null) || return 1
+		slot=$(printf '%s\n' "$state" | sed -n 's/^booting=//p')
+		active=$(printf '%s\n' "$state" | sed -n 's/^active=//p')
+		case "$slot" in
+			a|b) ;;
+			none)
+				case "$active" in a|b) slot=$active ;; *) return 1 ;; esac
+				already_accepted=1
+				;;
+			*) return 1 ;;
+		esac
+		[ "$already_accepted" = 1 ] ||
+			$BOOTSTATE accept "$slot" || return 1
+	fi
+	mkdir -p "${ACCEPTED_MARKER%/*}" || return 1
+	date -u '+%Y-%m-%dT%H:%M:%SZ' > "$ACCEPTED_MARKER" || return 1
+	sync
+	echo 0 > "$COUNTER" || return 1
+	sync
+	if [ -n "$slot" ]; then
+		log "system slot $slot accepted; management and SSH stayed healthy for ${STABLE_SECONDS}s"
+	else
+		log "LAN recovery accepted; management and SSH stayed healthy for ${STABLE_SECONDS}s"
+	fi
+}
+
+rollback_reboot()
+{
+	local counter=unavailable
+	[ -r "$COUNTER" ] && counter="$(cat "$COUNTER" 2>/dev/null)"
+	log "boot rejected after ${HEALTH_TIMEOUT}s; CFE counter=${counter}; rebooting without clearing it so dual-slot fallback can advance"
+	sync
+	sleep 5
+	reboot -f
+	return 1
+}
+
+mark_success()
+{
+	# A new A/B trial must also prove its complete local Wi-Fi and management
+	# stack. Already-accepted systems and immutable recovery use the smaller
+	# LAN/SSH gate so an external radio fault cannot create a reboot loop.
+	# If a trial stays unhealthy, reboot. The immutable bootstrap sees the
+	# unaccepted state and falls back without depending on CFE's counter.
+	local elapsed=0 stable=0
+	while [ "$elapsed" -lt "$HEALTH_TIMEOUT" ]; do
+		if boot_healthy; then
+			[ "$stable" -ne 0 ] || log "full health gate reached; starting stability window"
+			stable=$((stable + CHECK_INTERVAL))
+			if [ "$stable" -ge "$STABLE_SECONDS" ]; then
+				accept_boot && return 0
+				log "could not persist boot acceptance"
+				break
+			fi
+		else
+			[ "$stable" -eq 0 ] || log "health gate lost; restarting stability window"
+			stable=0
+		fi
+		sleep "$CHECK_INTERVAL"
+		elapsed=$((elapsed + CHECK_INTERVAL))
+	done
+
+	rollback_reboot
+}
+
+start()
+{
+	mark_success &
+}

@@ -1,0 +1,13 @@
+#!/bin/sh
+
+name="${0##*/}"
+binary="/opt/bcm/bin/$name"
+
+[ -x "$binary" ] || {
+	echo "missing Broadcom utility: $binary" >&2
+	exit 127
+}
+
+exec /opt/bcm/lib/ld-linux.so.3 \
+	--library-path /opt/bcm/lib \
+	"$binary" "$@"

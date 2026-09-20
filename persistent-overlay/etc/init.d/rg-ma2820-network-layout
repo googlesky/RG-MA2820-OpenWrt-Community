@@ -1,0 +1,193 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=19
+
+MARKER=/etc/rg-ma2820/.network-layout-v3
+ROM_ROOT=${RG_MA2820_ROM_ROOT:-/rom}
+SYNC_ROOT=${RG_MA2820_SYNC_ROOT:-}
+DEVICE_SOURCE=$ROM_ROOT/etc/rg-ma2820/device.env
+DEVICE_TARGET=/etc/rg-ma2820/device.env
+WIFI_ENV_SOURCE=$ROM_ROOT/etc/rg-ma2820/wifi.env
+WIFI_ENV_TARGET=/etc/rg-ma2820/wifi.env
+RPC_INIT=${RG_MA2820_RPC_INIT:-/etc/init.d/rpcd}
+RPC_PAYLOAD_CHANGED=0
+
+sync_managed_file()
+{
+	local source="$1" target="$2" mode="$3" description="$4"
+	[ -f "$source" ] || return 1
+	cmp -s "$source" "$target" && return 0
+
+	cp "$source" "$target.new" || return 1
+	chmod "$mode" "$target.new" || return 1
+	mv -f "$target.new" "$target" || return 1
+	logger -t rg-ma2820-network-layout \
+		"updated persistent $description"
+}
+
+sync_release_file()
+{
+	local target="$1" mode="$2" description="$3"
+	if ! cmp -s "$ROM_ROOT$target" "$SYNC_ROOT$target"; then
+		case "$target" in
+			/usr/share/rpcd/*) RPC_PAYLOAD_CHANGED=1 ;;
+		esac
+	fi
+	sync_managed_file "$ROM_ROOT$target" "$SYNC_ROOT$target" \
+		"$mode" "$description"
+}
+
+sync_release_payload()
+{
+	# A/B replaces the immutable SquashFS but intentionally preserves the
+	# writable overlay. Files copied there by an older release must not shadow
+	# security, recovery, radio, or LuCI fixes from the newly selected slot.
+	# Always compare against /rom, which is the running slot's lower root.
+	local target mode description
+	mkdir -p "$SYNC_ROOT/usr/lib/lua/luci/i18n" || return 1
+	while IFS='|' read -r target mode description; do
+		[ -n "$target" ] || continue
+		sync_release_file "$target" "$mode" "$description" || return 1
+	done <<'EOF'
+/etc/init.d/bcm6755-vendor-drivers|0755|vendor-driver service
+/etc/init.d/rg-ma2820-boot-success|0755|A/B health gate
+/etc/init.d/rg-ma2820-leds|0755|LED service
+/etc/init.d/rg-ma2820-management|0755|management service
+/etc/init.d/rg-ma2820-neighbor-sync|0755|neighbor-sync service
+/etc/init.d/rg-ma2820-network-layout|0755|overlay migration service
+/etc/init.d/rg-ma2820-reset-watch|0755|Reset watcher service
+/etc/init.d/rg-ma2820-roaming|0755|roaming service
+/etc/init.d/rg-ma2820-wifi|0755|Wi-Fi service
+/etc/init.d/sysntpd|0755|NTP service
+/etc/init.d/umdns|0755|mDNS service
+/usr/libexec/rg-ma2820/bootstate|0755|bootstate helper
+/usr/libexec/rg-ma2820/channel-select|0755|channel selector
+/usr/libexec/rg-ma2820/led-loop|0755|LED controller
+/usr/libexec/rg-ma2820/led-traffic|0755|Physical Ethernet traffic pulses
+/usr/libexec/rg-ma2820/management-loop|0755|management controller
+/usr/libexec/rg-ma2820/neighbor-sync|0755|neighbor controller
+/usr/libexec/rg-ma2820/reset-watch|0755|Reset controller
+/usr/libexec/rg-ma2820/roaming-steer|0755|roaming controller
+/usr/sbin/rg-ma2820-factory-reset|0755|factory-reset command
+/usr/sbin/rg-ma2820-peer|0755|peer command
+/usr/sbin/rg-ma2820-recovery-upgrade|0755|immutable-recovery updater
+/usr/sbin/rg-ma2820-set-wifi|0755|Wi-Fi configuration command
+/usr/sbin/rg-ma2820-overview-status|0755|operations dashboard status command
+/usr/sbin/rg-ma2820-wifi-capabilities|0755|Wi-Fi capability command
+/usr/sbin/rg-ma2820-wifi-scan|0755|Wi-Fi scan command
+/usr/sbin/rg-ma2820-system-upgrade|0755|A/B updater
+/usr/sbin/rg-ma2820-timezone|0755|geographic timezone controller
+/usr/sbin/rg-ma2820-wifi-status|0755|Wi-Fi status command
+/usr/share/luci/menu.d/luci-app-rg-ma2820.json|0644|LuCI menu
+/usr/share/rpcd/acl.d/luci-app-rg-ma2820.json|0644|LuCI ACL
+/usr/share/rpcd/ucode/rg-ma2820.uc|0644|LuCI RPC
+/usr/lib/lua/luci/i18n/base.vi.lmo|0644|Vietnamese LuCI base catalog
+/usr/lib/lua/luci/i18n/rg-ma2820.vi.lmo|0644|Vietnamese LuCI catalog
+/www/luci-static/resources/view/rg-ma2820/wireless.js|0644|LuCI wireless view
+/www/luci-static/resources/view/status/index.js|0644|LuCI operations dashboard
+EOF
+}
+
+sync_managed_configuration()
+{
+	# /etc can retain upper-overlay copies from an older system slot.  Immutable
+	# device identity and service files always follow the new image.  Preserve a
+	# v2 and v3 Wi-Fi configurations are both understood. The standard LuCI
+	# form upgrades v2 atomically on its next apply; never erase owner settings
+	# merely because a system slot introduced a newer schema.
+	sync_release_payload || return 1
+	sync_managed_file "$DEVICE_SOURCE" "$SYNC_ROOT$DEVICE_TARGET" 0600 'device identity' || return 1
+	grep -Eq "^WIFI_CONFIG_VERSION='(2|3)'$" "$SYNC_ROOT$WIFI_ENV_TARGET" 2>/dev/null ||
+		sync_managed_file "$WIFI_ENV_SOURCE" "$SYNC_ROOT$WIFI_ENV_TARGET" 0600 'Wi-Fi configuration' || return 1
+}
+
+start()
+{
+	[ "$(uname -r)" = 4.1.52 ] || return 0
+	sync_managed_configuration || return 1
+	# rpcd starts at S12, before this migration service.  When an A/B update
+	# replaces a shadowed ucode plugin or ACL at S19, reload it now so the first
+	# boot exposes exactly the API that the new image's health gate validates.
+	if [ "$RPC_PAYLOAD_CHANGED" = 1 ] && pidof rpcd >/dev/null 2>&1; then
+		"$RPC_INIT" restart >/dev/null 2>&1 || return 1
+	fi
+	. /etc/rg-ma2820/device.env
+	# English remains built in. Register the application catalog so LuCI can
+	# follow the browser language or an explicit System -> Language choice.
+	if [ "$(uci -q get luci.languages.vi)" != 'Tiếng Việt' ]; then
+		uci -q set "luci.languages.vi=Tiếng Việt"
+		uci -q commit luci
+	fi
+	# procd's seccomp/jail setup from current umdns assumes a newer kernel.
+	# Keep the visible UCI state aligned with our vendor-kernel-safe init script.
+	if [ "$(uci -q get 'umdns.@umdns[0].jail')" != 0 ]; then
+		uci -q set 'umdns.@umdns[0].jail=0'
+		uci -q commit umdns
+	fi
+	# ubihealthd expects newer UBI health-reporting ioctls and exits immediately
+	# on the retained 4.1 kernel.  The live health gate checks UBI counters
+	# directly, so do not leave a permanently failed procd instance behind.
+	local section ubi_changed=0
+	for section in $(uci -q show ubihealthd |
+		sed -n 's/^ubihealthd\.\([^.=]*\)=ubi-device$/\1/p'); do
+		if [ "$(uci -q get "ubihealthd.$section.enable")" != 0 ]; then
+			uci -q set "ubihealthd.$section.enable=0"
+			ubi_changed=1
+		fi
+	done
+	[ "$ubi_changed" = 0 ] || uci -q commit ubihealthd
+	[ -e "$MARKER" ] && return 0
+
+	# A replaced root filesystem can retain the writable overlay from an older
+	# image.  Normalize only device sections that claim the br-lan kernel name;
+	# leave every unrelated network section untouched.
+	for section in $(uci -q show network |
+		sed -n 's/^network\.\([^.=]*\)=device$/\1/p'); do
+		[ "$(uci -q get "network.$section.name")" = br-lan ] || continue
+		uci -q delete "network.$section"
+	done
+
+	uci -q batch <<'EOF'
+delete network.mgmt_dhcp
+delete network.mgmt
+set network.br_lan='device'
+set network.br_lan.name='br-lan'
+set network.br_lan.type='bridge'
+set network.br_lan.stp='1'
+set network.br_lan.igmp_snooping='1'
+set network.br_lan.bridge_empty='1'
+add_list network.br_lan.ports='eth0'
+add_list network.br_lan.ports='eth1'
+add_list network.br_lan.ports='eth2'
+add_list network.br_lan.ports='eth3'
+add_list network.br_lan.ports='eth4'
+set network.lan='interface'
+set network.lan.device='br-lan'
+set network.lan.proto='none'
+set network.lan.delegate='0'
+delete network.lan.ipaddr
+delete network.lan.netmask
+delete network.lan.gateway
+delete network.lan.dns
+delete network.lan.ip6assign
+delete network.lan.ip6hint
+set network.mgmt='interface'
+set network.mgmt.device='br-lan'
+set network.mgmt.proto='dhcp'
+set network.mgmt.metric='10'
+set network.mgmt.delegate='0'
+set dhcp.lan.ignore='1'
+set dhcp.lan.dhcpv4='disabled'
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+EOF
+	uci -q set "network.mgmt.hostname=$HOSTNAME"
+
+	uci -q commit network || return 1
+	uci -q commit dhcp || return 1
+	mkdir -p "${MARKER%/*}" || return 1
+	touch "$MARKER" || return 1
+	logger -t rg-ma2820-network-layout \
+		"installed port-agnostic DHCP management bridge"
+}

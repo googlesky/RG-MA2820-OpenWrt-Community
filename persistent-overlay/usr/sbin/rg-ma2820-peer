@@ -1,0 +1,93 @@
+#!/bin/sh
+# Passwordless maintenance of the other AP over its deterministic link-local.
+
+set -eu
+
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+. "$DEVICE_ENV"
+
+DBCLIENT=${RG_MA2820_DBCLIENT:-dbclient}
+SCP=${RG_MA2820_SCP:-scp}
+IDENTITY=${RG_MA2820_PEER_IDENTITY:-/etc/dropbear/dropbear_ed25519_host_key}
+SSH_HOME=${RG_MA2820_PEER_SSH_HOME:-/root}
+REMOTE="root@$PEER_LINK_LOCAL"
+UPLOAD=/tmp/rg-ma2820-peer-system.squashfs
+WIFI_UPLOAD=/tmp/rg-ma2820-peer-wifi.$$.env
+
+usage()
+{
+	cat >&2 <<'EOF'
+usage: rg-ma2820-peer [shell|status|copy IMAGE|upgrade IMAGE [--no-reboot]|
+                       wifi-config FILE|recovery|retry|factory-reset --yes|
+                       -- COMMAND...]
+EOF
+	exit 2
+}
+
+peer_ssh()
+{
+	env HOME="$SSH_HOME" "$DBCLIENT" -o StrictHostKeyChecking=yes \
+		-i "$IDENTITY" -K 15 "$REMOTE" "$@"
+}
+
+command=${1:-shell}
+[ "$#" -eq 0 ] || shift
+case "$command" in
+	shell)
+		[ "$#" -eq 0 ] || usage
+		exec env HOME="$SSH_HOME" "$DBCLIENT" -t -o StrictHostKeyChecking=yes \
+			-i "$IDENTITY" -K 15 "$REMOTE"
+		;;
+	status)
+		[ "$#" -eq 0 ] || usage
+		exec env HOME="$SSH_HOME" "$DBCLIENT" -o StrictHostKeyChecking=yes \
+			-i "$IDENTITY" -K 15 "$REMOTE" \
+			'printf "host="; cat /proc/sys/kernel/hostname; [ ! -e /etc/rg-ma2820/recovery-root ] || echo mode=recovery; /usr/libexec/rg-ma2820/bootstate status; ip -4 addr show dev br-lan'
+		;;
+	copy)
+		[ "$#" -eq 1 ] && [ -f "$1" ] || usage
+		exec env HOME="$SSH_HOME" "$SCP" -i "$IDENTITY" "$1" "$REMOTE:$UPLOAD"
+		;;
+	wifi-config)
+		[ "$#" -eq 1 ] && [ -f "$1" ] || usage
+		env HOME="$SSH_HOME" "$SCP" -i "$IDENTITY" "$1" "$REMOTE:$WIFI_UPLOAD"
+		if ! peer_ssh /usr/sbin/rg-ma2820-set-wifi --install-staged "$WIFI_UPLOAD"; then
+			peer_ssh rm -f "$WIFI_UPLOAD" >/dev/null 2>&1 || true
+			exit 1
+		fi
+		peer_ssh rm -f "$WIFI_UPLOAD" >/dev/null 2>&1 || true
+		;;
+	upgrade)
+		[ "$#" -ge 1 ] && [ "$#" -le 2 ] && [ -f "$1" ] || usage
+		image=$1
+		reboot_after=1
+		if [ "$#" -eq 2 ]; then
+			[ "$2" = --no-reboot ] || usage
+			reboot_after=0
+		fi
+		env HOME="$SSH_HOME" "$SCP" -i "$IDENTITY" "$image" "$REMOTE:$UPLOAD"
+		peer_ssh /usr/sbin/rg-ma2820-system-upgrade "$UPLOAD" --no-reboot
+		if [ "$reboot_after" = 1 ]; then
+			echo "Peer image verified and staged; rebooting $PEER_ID."
+			peer_ssh 'sync; reboot' || true
+		fi
+		;;
+	recovery)
+		[ "$#" -eq 0 ] || usage
+		peer_ssh '/usr/libexec/rg-ma2820/bootstate recovery && sync && reboot' || true
+		;;
+	retry)
+		[ "$#" -eq 0 ] || usage
+		peer_ssh '/usr/libexec/rg-ma2820/bootstate retry && sync && reboot' || true
+		;;
+	factory-reset)
+		[ "$#" -eq 1 ] && [ "$1" = --yes ] || usage
+		peer_ssh '/usr/sbin/rg-ma2820-factory-reset --yes' || true
+		;;
+	--)
+		[ "$#" -gt 0 ] || usage
+		exec env HOME="$SSH_HOME" "$DBCLIENT" -o StrictHostKeyChecking=yes \
+			-i "$IDENTITY" -K 15 "$REMOTE" "$@"
+		;;
+	*) usage ;;
+esac

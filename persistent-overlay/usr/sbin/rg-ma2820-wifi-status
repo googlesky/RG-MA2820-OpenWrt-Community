@@ -1,0 +1,461 @@
+#!/bin/sh
+# Emit configuration, vendor-radio, wired-peer and roaming state as JSON.
+
+WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+STATE_FILE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
+PEER_STATE_FILE=${RG_MA2820_PEER_WIFI_STATE:-/var/run/rg-ma2820-peer-wifi.state}
+EVENT_FILE=${RG_MA2820_ROAM_EVENTS:-/var/run/rg-ma2820-roaming.events}
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
+PING=${RG_MA2820_PING:-ping}
+
+[ -r "$WIFI_ENV" ] || exit 1
+[ -r "$DEVICE_ENV" ] || exit 1
+. "$WIFI_ENV"
+. "$DEVICE_ENV"
+. /usr/share/libubox/jshn.sh
+
+WIFI_CONFIG_VERSION=${WIFI_CONFIG_VERSION:-1}
+WIFI_PROFILE=${WIFI_PROFILE:-factory}
+RADIO_2G_ENABLED=${RADIO_2G_ENABLED:-1}
+RADIO_5G_ENABLED=${RADIO_5G_ENABLED:-1}
+SSID_2G=${SSID_2G:-${SSID_BASE:-RG-MA2820-Mesh}}
+SSID_5G=${SSID_5G:-${SSID_BASE:-RG-MA2820-Mesh}}
+SSID_5G_LEGACY=${SSID_5G_LEGACY:-${SSID_5G}-Legacy}
+ENABLE_5G_LEGACY=${ENABLE_5G_LEGACY:-0}
+if [ -z "${SECURITY_2G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && SECURITY_2G=wpa2 || SECURITY_2G=${WIFI_SECURITY:-wpa2}
+fi
+if [ -z "${SECURITY_5G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && SECURITY_5G=wpa3 || SECURITY_5G=${WIFI_SECURITY:-wpa2}
+fi
+SECURITY_5G_LEGACY=${SECURITY_5G_LEGACY:-wpa2}
+WPA_PSK_2G=${WPA_PSK_2G:-${WPA_PSK:-}}
+WPA_PSK_5G=${WPA_PSK_5G:-${WPA_PSK:-}}
+WPA_PSK_5G_LEGACY=${WPA_PSK_5G_LEGACY:-${WPA_PSK:-}}
+HIDDEN_2G=${HIDDEN_2G:-0}
+HIDDEN_5G=${HIDDEN_5G:-0}
+HIDDEN_5G_LEGACY=${HIDDEN_5G_LEGACY:-0}
+ISOLATE_2G=${ISOLATE_2G:-0}
+ISOLATE_5G=${ISOLATE_5G:-0}
+ISOLATE_5G_LEGACY=${ISOLATE_5G_LEGACY:-0}
+MAX_CLIENTS_2G=${MAX_CLIENTS_2G:-128}
+MAX_CLIENTS_5G=${MAX_CLIENTS_5G:-128}
+MAX_CLIENTS_5G_LEGACY=${MAX_CLIENTS_5G_LEGACY:-128}
+MFP_2G=${MFP_2G:-0}
+if [ -z "${MFP_5G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && MFP_5G=2 || MFP_5G=0
+fi
+MFP_5G_LEGACY=${MFP_5G_LEGACY:-0}
+FT_2G=${FT_2G:-0}
+if [ -z "${FT_5G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && FT_5G=${ENABLE_FT_SAE:-1} || FT_5G=0
+fi
+if [ -z "${FT_5G_LEGACY+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && FT_5G_LEGACY=1 || FT_5G_LEGACY=0
+fi
+COUNTRY_CODE=${COUNTRY_CODE:-US}
+CHANNEL_2G=${CHANNEL_2G:-auto}
+CHANNEL_5G=${CHANNEL_5G:-auto}
+WIDTH_5G=${WIDTH_5G:-80}
+TXPOWER_2G_DBM=${TXPOWER_2G_DBM:-auto}
+if [ -z "${TXPOWER_5G_DBM+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && TXPOWER_5G_DBM=23 || TXPOWER_5G_DBM=auto
+fi
+BEACON_INTERVAL=${BEACON_INTERVAL:-100}
+DTIM_PERIOD=${DTIM_PERIOD:-2}
+ENABLE_11K=${ENABLE_11K:-1}
+ENABLE_11V=${ENABLE_11V:-1}
+MOBILITY_DOMAIN=${MOBILITY_DOMAIN:-4d41}
+FT_OVER_DS=${FT_OVER_DS:-0}
+HE_2G=${HE_2G:-1}
+HE_5G=${HE_5G:-1}
+BSS_COLOR_2G=${BSS_COLOR_2G:-auto}
+BSS_COLOR_5G=${BSS_COLOR_5G:-auto}
+AIRTIME_FAIRNESS=${AIRTIME_FAIRNESS:-1}
+FRAMEBURST=${FRAMEBURST:-1}
+BEAMFORMING=${BEAMFORMING:-1}
+IMPLICIT_BEAMFORMING=${IMPLICIT_BEAMFORMING:-1}
+MU_FEATURES=${MU_FEATURES:-1}
+AMPDU=${AMPDU:-1}
+AMSDU=${AMSDU:-1}
+LDPC=${LDPC:-1}
+STBC_TX=${STBC_TX:-0}
+STBC_RX=${STBC_RX:-0}
+SGI_TX=${SGI_TX:--1}
+ACL_MODE=${ACL_MODE:-disabled}
+ACL_MACS=${ACL_MACS:-}
+ROAM_STEERING=${ROAM_STEERING:-1}
+ROAM_BAND_2G=${ROAM_BAND_2G:-0}
+ROAM_BAND_5G=${ROAM_BAND_5G:-1}
+ROAM_INTERVAL=${ROAM_INTERVAL:-4}
+ROAM_RSSI_TRIGGER=${ROAM_RSSI_TRIGGER:--72}
+ROAM_RSSI_HARD=${ROAM_RSSI_HARD:--82}
+ROAM_RSSI_SAMPLES=${ROAM_RSSI_SAMPLES:-3}
+ROAM_COOLDOWN=${ROAM_COOLDOWN:-60}
+ROAM_MIN_ASSOC_AGE=${ROAM_MIN_ASSOC_AGE:-15}
+ROAM_HARD_FALLBACK=${ROAM_HARD_FALLBACK:-1}
+ROAM_HARD_DELAY=${ROAM_HARD_DELAY:-12}
+ROAM_HARD_WINDOW=${ROAM_HARD_WINDOW:-45}
+
+state="$(cat "$STATE_FILE" 2>/dev/null)"
+peer_state="$(cat "$PEER_STATE_FILE" 2>/dev/null)"
+
+state_value()
+{
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+json_boolean()
+{
+	[ "$2" = 1 ] && json_add_boolean "$1" 1 || json_add_boolean "$1" 0
+}
+
+number_or_zero()
+{
+	echo "$1" | grep -Eq '^-?[0-9]+$' && printf '%s\n' "$1" || printf '0\n'
+}
+
+hostapd_enabled()
+{
+	$HOSTAPD_CLI -p /var/run/hostapd -i "$1" status 2>/dev/null |
+		grep -q '^state=ENABLED$'
+}
+
+radio_setting()
+{
+	local interface="$1" kind="$2" value
+	case "$interface:$kind" in
+		wl0:ssid) echo "$SSID_2G" ;; wl1:ssid) echo "$SSID_5G" ;;
+		wl1.1:ssid) echo "$SSID_5G_LEGACY" ;;
+		wl0:security) echo "$SECURITY_2G" ;; wl1:security) echo "$SECURITY_5G" ;;
+		wl1.1:security) echo "$SECURITY_5G_LEGACY" ;;
+		wl0:mfp) echo "$MFP_2G" ;; wl1:mfp) echo "$MFP_5G" ;; wl1.1:mfp) echo "$MFP_5G_LEGACY" ;;
+		wl0:ft) echo "$FT_2G" ;; wl1:ft) echo "$FT_5G" ;; wl1.1:ft) echo "$FT_5G_LEGACY" ;;
+		wl0:hidden) echo "$HIDDEN_2G" ;; wl1:hidden) echo "$HIDDEN_5G" ;; wl1.1:hidden) echo "$HIDDEN_5G_LEGACY" ;;
+		wl0:isolate) echo "$ISOLATE_2G" ;; wl1:isolate) echo "$ISOLATE_5G" ;; wl1.1:isolate) echo "$ISOLATE_5G_LEGACY" ;;
+		wl0:max_clients) echo "$MAX_CLIENTS_2G" ;; wl1:max_clients) echo "$MAX_CLIENTS_5G" ;; wl1.1:max_clients) echo "$MAX_CLIENTS_5G_LEGACY" ;;
+		wl0:bssid) state_value "$state" BSSID_2G ;; wl1:bssid) state_value "$state" BSSID_5G ;;
+		wl1.1:bssid) state_value "$state" BSSID_5G_LEGACY ;;
+		wl0:channel) state_value "$state" CHANNEL_2G ;; wl1:channel|wl1.1:channel) state_value "$state" CHANNEL_5G ;;
+		wl0:width) echo 20 ;;
+		wl1:width|wl1.1:width)
+			value="$(state_value "$state" WIDTH_5G)"
+			echo "${value:-$WIDTH_5G}"
+			;;
+		wl0:band) echo '2g' ;; wl1:band|wl1.1:band) echo '5g' ;;
+		wl0:steering) [ "$ROAM_STEERING" = 1 ] && [ "$ROAM_BAND_2G" = 1 ] && echo 1 || echo 0 ;;
+		wl1:steering|wl1.1:steering) [ "$ROAM_STEERING" = 1 ] && [ "$ROAM_BAND_5G" = 1 ] && echo 1 || echo 0 ;;
+	esac
+}
+
+station_ip()
+{
+	ip -4 neigh show dev br-lan 2>/dev/null |
+		awk -v wanted="$1" 'tolower($5) == wanted { print $1; exit }'
+}
+
+add_client()
+{
+	local interface="$1" mac="$2" rssi info age idle auth phy btm=0 rrm=0 last_event
+	local tx_rate rx_rate tx_bytes rx_bytes retries noise bandwidth ipaddr
+	mac="$(echo "$mac" | tr 'A-F' 'a-f')"
+	rssi="$($WL -i "$interface" rssi "$mac" 2>/dev/null)"
+	rssi="$(number_or_zero "$rssi")"
+	info="$($WL -i "$interface" sta_info "$mac" 2>/dev/null)"
+	age="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*in network \([0-9][0-9]*\) seconds.*/\1/p' | head -n 1)"
+	idle="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*idle \([0-9][0-9]*\) seconds.*/\1/p' | head -n 1)"
+	auth="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*auth: //p' | head -n 1)"
+	case "$auth" in
+		''|unknown|UNKNOWN*) auth="$(radio_setting "$interface" security)" ;;
+	esac
+	tx_rate="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*rate of last tx pkt: \([0-9][0-9]*\) kbps.*/\1/p' | head -n 1)"
+	rx_rate="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*rate of last rx pkt: \([0-9][0-9]*\) kbps.*/\1/p' | head -n 1)"
+	tx_bytes="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*tx total bytes: \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+	rx_bytes="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*rx data bytes: \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+	retries="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*tx pkts retries: \([0-9][0-9]*\).*/\1/p' | head -n 1)"
+	noise="$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*per antenna noise floor: \(-[0-9][0-9]*\).*/\1/p' | head -n 1)"
+	bandwidth="$(printf '%s\n' "$info" | sed -n 's/^link bandwidth = \([0-9][0-9]*\) MHZ.*/\1/p' | head -n 1)"
+	printf '%s\n' "$info" | grep -q 'BSS-Transition' && btm=1
+	printf '%s\n' "$info" | grep -Eq 'RRM capability = 0x[1-9a-fA-F]' && rrm=1
+	if printf '%s\n' "$info" | grep -q 'HE_CAP'; then
+		phy='Wi-Fi 6 (HE)'
+	elif printf '%s\n' "$info" | grep -q 'VHT_CAP'; then
+		phy='Wi-Fi 5 (VHT)'
+	elif printf '%s\n' "$info" | grep -q 'N_CAP'; then
+		phy='Wi-Fi 4 (HT)'
+	else
+		phy='legacy'
+	fi
+	ipaddr="$(station_ip "$mac")"
+	last_event="$(tail -n 200 "$EVENT_FILE" 2>/dev/null | grep -i "sta=$mac" | tail -n 1)"
+
+	json_add_object ''
+	json_add_string mac "$mac"
+	json_add_string ip_address "${ipaddr:-}"
+	json_add_int rssi "$rssi"
+	json_add_int noise "$(number_or_zero "$noise")"
+	json_add_int connected_seconds "$(number_or_zero "$age")"
+	json_add_int idle_seconds "$(number_or_zero "$idle")"
+	json_add_int tx_rate_kbps "$(number_or_zero "$tx_rate")"
+	json_add_int rx_rate_kbps "$(number_or_zero "$rx_rate")"
+	json_add_int tx_bytes "$(number_or_zero "$tx_bytes")"
+	json_add_int rx_bytes "$(number_or_zero "$rx_bytes")"
+	json_add_int tx_retries "$(number_or_zero "$retries")"
+	json_add_int bandwidth_mhz "$(number_or_zero "$bandwidth")"
+	json_add_string security "${auth:-unknown}"
+	json_add_string phy "$phy"
+	json_boolean bss_transition "$btm"
+	json_boolean rrm "$rrm"
+	json_add_string last_steering "${last_event:-}"
+	json_close_object
+}
+
+add_radio()
+{
+	local interface="$1" base_interface="$1" mac count=0 txpower online=0 steering
+	local chanspec noise he bss_color taf
+	[ "$interface" != wl1.1 ] || base_interface=wl1
+	hostapd_enabled "$interface" && online=1
+	steering="$(radio_setting "$interface" steering)"
+	# txpwr1 reports the 127-qdbm automatic-policy sentinel as 31.75 dBm.
+	# Show the driver's channel-specific effective target instead, while the
+	# health check below continues to validate the configured sentinel/cap.
+	txpower="$($WL -i "$base_interface" txpwr_target_max 2>/dev/null |
+		sed -n 's/^Maximum Tx Power Target.*:[[:space:]]*\(-*[0-9][0-9.]*\).*/\1/p' |
+		head -n 1)"
+	[ -n "$txpower" ] ||
+		txpower="$($WL -i "$base_interface" txpwr1 2>/dev/null |
+			sed -n 's/.* \(-*[0-9][0-9.]*\) dbm.*/\1/p' | head -n 1)"
+	chanspec="$($WL -i "$base_interface" chanspec 2>/dev/null | sed 's/ .*//')"
+	noise="$($WL -i "$base_interface" noise 2>/dev/null | head -n 1)"
+	he="$($WL -i "$base_interface" he enab 2>/dev/null | head -n 1)"
+	bss_color="$($WL -i "$base_interface" he bsscolor 2>/dev/null | sed -n 's/^Color: //p' | head -n 1)"
+	taf="$($WL -i "$base_interface" taf enable 2>/dev/null | sed -n 's/^[^0-9]*\([01]\).*/\1/p' | head -n 1)"
+
+	json_add_object ''
+	json_add_string interface "$interface"
+	json_add_string band "$(radio_setting "$interface" band)"
+	json_add_string ssid "$(radio_setting "$interface" ssid)"
+	json_add_string security "$(radio_setting "$interface" security)"
+	json_add_int mfp "$(radio_setting "$interface" mfp)"
+	json_boolean fast_transition "$(radio_setting "$interface" ft)"
+	json_boolean hidden "$(radio_setting "$interface" hidden)"
+	json_boolean isolation "$(radio_setting "$interface" isolate)"
+	json_add_int max_clients "$(radio_setting "$interface" max_clients)"
+	json_add_string bssid "$(radio_setting "$interface" bssid)"
+	json_add_string channel "$(radio_setting "$interface" channel)"
+	json_add_string width "$(radio_setting "$interface" width)"
+	json_add_string chanspec "${chanspec:-unknown}"
+	json_add_string txpower_dbm "${txpower:-unknown}"
+	json_add_int noise_dbm "$(number_or_zero "$noise")"
+	json_add_int bss_color "$(number_or_zero "$bss_color")"
+	json_boolean online "$online"
+	json_boolean steering "$steering"
+	json_boolean ieee80211k "$ENABLE_11K"
+	json_boolean ieee80211v "$ENABLE_11V"
+	json_boolean wifi6 "${he:-0}"
+	json_boolean airtime_fairness "${taf:-0}"
+	json_add_array clients
+	for mac in $($WL -i "$interface" assoclist 2>/dev/null | sed -n 's/^assoclist //p'); do
+		add_client "$interface" "$mac"
+		count=$((count + 1))
+	done
+	json_close_array
+	json_add_int client_count "$count"
+	json_close_object
+}
+
+txpower_matches()
+{
+	local interface="$1" target="$2" expected actual
+	case "$target" in
+		auto) expected=127 ;;
+		''|*[!0-9]*) return 1 ;;
+		*) expected=$((target * 4)) ;;
+	esac
+	actual="$($WL -i "$interface" txpwr1 2>/dev/null |
+		sed -n 's/^TxPower is \(-*[0-9][0-9]*\) qdbm.*/\1/p' | head -n 1)"
+	[ "$actual" = "$expected" ]
+}
+
+peer_online=0
+"$PING" -c 1 -W 1 "$PEER_LINK_LOCAL" >/dev/null 2>&1 && peer_online=1
+recovery=0
+[ ! -e /etc/rg-ma2820/recovery-root ] || recovery=1
+release="$(cat /etc/rg-ma2820/release 2>/dev/null)"
+bootstate="$(/usr/libexec/rg-ma2820/bootstate status 2>/dev/null)"
+accepted_slot="$(state_value "$bootstate" active)"
+pending_slot="$(state_value "$bootstate" pending)"
+trial_slot="$(state_value "$bootstate" booting)"
+boot_result="$(state_value "$bootstate" last_result)"
+rom_device="$(awk '$2 == "/rom" { print $1 }' /proc/mounts)"
+case "$rom_device" in
+	/dev/ubiblock0_4) running_slot=a ;; /dev/ubiblock0_5) running_slot=b ;;
+	*) [ "$recovery" = 1 ] && running_slot=recovery || running_slot=unknown ;;
+esac
+
+roaming_online=0
+/etc/init.d/rg-ma2820-roaming status >/dev/null 2>&1 && roaming_online=1
+neighbor_synced=0
+[ "$(state_value "$peer_state" PROFILE)" = wired-mesh ] && neighbor_synced=1
+selected_channel_2g="$(state_value "$state" CHANNEL_2G)"
+selected_channel_5g="$(state_value "$state" CHANNEL_5G)"
+selected_center_5g="$(state_value "$state" CENTER_CHANNEL_5G)"
+peer_channel_2g="$(state_value "$peer_state" CHANNEL_2G)"
+peer_channel_5g="$(state_value "$peer_state" CHANNEL_5G)"
+peer_center_5g="$(state_value "$peer_state" CENTER_CHANNEL_5G)"
+config_synced=0
+[ -n "$(state_value "$state" CONFIG_HASH)" ] &&
+	[ "$(state_value "$state" CONFIG_HASH)" = "$(state_value "$peer_state" CONFIG_HASH)" ] && config_synced=1
+channel_plan_ok=0
+if [ -n "$selected_channel_2g" ] && [ -n "$selected_channel_5g" ] &&
+	[ -n "$peer_channel_2g" ] && [ -n "$peer_channel_5g" ]; then
+	channel_plan_ok=1
+	[ "$RADIO_2G_ENABLED" != 1 ] || [ "$selected_channel_2g" != "$peer_channel_2g" ] || channel_plan_ok=0
+	[ "$RADIO_5G_ENABLED" != 1 ] || [ "$selected_center_5g" != "$peer_center_5g" ] || channel_plan_ok=0
+fi
+
+radios_ready=1
+[ "$RADIO_2G_ENABLED" != 1 ] || hostapd_enabled wl0 || radios_ready=0
+[ "$RADIO_5G_ENABLED" != 1 ] || hostapd_enabled wl1 || radios_ready=0
+[ "$ENABLE_5G_LEGACY" != 1 ] || hostapd_enabled wl1.1 || radios_ready=0
+txpower_ok=1
+[ "$RADIO_2G_ENABLED" != 1 ] || txpower_matches wl0 "$TXPOWER_2G_DBM" || txpower_ok=0
+[ "$RADIO_5G_ENABLED" != 1 ] || txpower_matches wl1 "$TXPOWER_5G_DBM" || txpower_ok=0
+mesh_ready=0
+if [ "$WIFI_PROFILE" = wired-mesh ] && [ "$peer_online" = 1 ] &&
+	[ "$neighbor_synced" = 1 ] && [ "$config_synced" = 1 ] &&
+	[ "$roaming_online" = 1 ] && [ "$channel_plan_ok" = 1 ] &&
+	[ "$radios_ready" = 1 ] && [ "$txpower_ok" = 1 ]; then
+	mesh_ready=1
+fi
+
+json_init
+json_add_string device_id "$DEVICE_ID"
+json_add_string hostname "$HOSTNAME"
+json_add_string release "${release:-unknown}"
+json_add_string active_slot "${accepted_slot:-unknown}"
+json_add_string running_slot "${running_slot:-unknown}"
+json_add_string accepted_slot "${accepted_slot:-unknown}"
+json_add_string pending_slot "${pending_slot:-none}"
+json_add_string trial_slot "${trial_slot:-none}"
+json_add_string boot_result "${boot_result:-unknown}"
+json_boolean recovery "$recovery"
+json_add_string profile "$WIFI_PROFILE"
+json_add_string config_version "$WIFI_CONFIG_VERSION"
+json_add_string backhaul wired
+json_add_string country "$COUNTRY_CODE"
+json_add_string peer_id "$PEER_ID"
+json_add_string peer_address "$PEER_LINK_LOCAL"
+json_boolean peer_online "$peer_online"
+json_boolean neighbor_synced "$neighbor_synced"
+json_boolean config_synced "$config_synced"
+json_boolean roaming_online "$roaming_online"
+json_boolean channel_plan_ok "$channel_plan_ok"
+json_boolean mesh_ready "$mesh_ready"
+json_add_string peer_channel_2g "$peer_channel_2g"
+json_add_string peer_channel_5g "$peer_channel_5g"
+
+json_add_object config
+json_boolean radio_2g_enabled "$RADIO_2G_ENABLED"
+json_boolean radio_5g_enabled "$RADIO_5G_ENABLED"
+json_add_string ssid_2g "$SSID_2G"
+json_add_string ssid_5g "$SSID_5G"
+json_add_string ssid_5g_legacy "$SSID_5G_LEGACY"
+json_boolean enable_5g_legacy "$ENABLE_5G_LEGACY"
+json_add_string security_2g "$SECURITY_2G"
+json_add_string security_5g "$SECURITY_5G"
+json_add_string security_5g_legacy "$SECURITY_5G_LEGACY"
+json_add_string password_2g ''
+json_add_string password_5g ''
+json_add_string password_5g_legacy ''
+json_boolean has_password_2g "$([ -n "$WPA_PSK_2G" ] && echo 1 || echo 0)"
+json_boolean has_password_5g "$([ -n "$WPA_PSK_5G" ] && echo 1 || echo 0)"
+json_boolean has_password_5g_legacy "$([ -n "$WPA_PSK_5G_LEGACY" ] && echo 1 || echo 0)"
+json_boolean hidden_2g "$HIDDEN_2G"
+json_boolean hidden_5g "$HIDDEN_5G"
+json_boolean hidden_5g_legacy "$HIDDEN_5G_LEGACY"
+json_boolean isolate_2g "$ISOLATE_2G"
+json_boolean isolate_5g "$ISOLATE_5G"
+json_boolean isolate_5g_legacy "$ISOLATE_5G_LEGACY"
+json_add_int max_clients_2g "$MAX_CLIENTS_2G"
+json_add_int max_clients_5g "$MAX_CLIENTS_5G"
+json_add_int max_clients_5g_legacy "$MAX_CLIENTS_5G_LEGACY"
+json_add_string mfp_2g "$MFP_2G"
+json_add_string mfp_5g "$MFP_5G"
+json_add_string mfp_5g_legacy "$MFP_5G_LEGACY"
+json_boolean ft_2g "$FT_2G"
+json_boolean ft_5g "$FT_5G"
+json_boolean ft_5g_legacy "$FT_5G_LEGACY"
+json_add_string country "$COUNTRY_CODE"
+json_add_string channel_2g "$CHANNEL_2G"
+json_add_string channel_5g "$CHANNEL_5G"
+json_add_string width_5g "$WIDTH_5G"
+json_add_string txpower_2g "$TXPOWER_2G_DBM"
+json_add_string txpower_5g "$TXPOWER_5G_DBM"
+json_add_int beacon_interval "$BEACON_INTERVAL"
+json_add_int dtim_period "$DTIM_PERIOD"
+json_boolean ieee80211k "$ENABLE_11K"
+json_boolean ieee80211v "$ENABLE_11V"
+json_add_string mobility_domain "$MOBILITY_DOMAIN"
+json_boolean ft_over_ds "$FT_OVER_DS"
+json_boolean he_2g "$HE_2G"
+json_boolean he_5g "$HE_5G"
+json_add_string bss_color_2g "$BSS_COLOR_2G"
+json_add_string bss_color_5g "$BSS_COLOR_5G"
+json_boolean airtime_fairness "$AIRTIME_FAIRNESS"
+json_boolean frameburst "$FRAMEBURST"
+json_boolean beamforming "$BEAMFORMING"
+json_boolean implicit_beamforming "$IMPLICIT_BEAMFORMING"
+json_boolean mu_features "$MU_FEATURES"
+json_boolean ampdu "$AMPDU"
+json_boolean amsdu "$AMSDU"
+json_boolean ldpc "$LDPC"
+json_boolean stbc_tx "$STBC_TX"
+json_boolean stbc_rx "$STBC_RX"
+json_add_string sgi_tx "$SGI_TX"
+json_add_string acl_mode "$ACL_MODE"
+json_add_string acl_macs "$ACL_MACS"
+json_boolean roam_steering "$ROAM_STEERING"
+json_boolean roam_band_2g "$ROAM_BAND_2G"
+json_boolean roam_band_5g "$ROAM_BAND_5G"
+json_add_int roam_interval "$ROAM_INTERVAL"
+json_add_int roam_rssi "$ROAM_RSSI_TRIGGER"
+json_add_int hard_rssi "$ROAM_RSSI_HARD"
+json_add_int roam_samples "$ROAM_RSSI_SAMPLES"
+json_add_int roam_cooldown "$ROAM_COOLDOWN"
+json_add_int roam_min_age "$ROAM_MIN_ASSOC_AGE"
+json_boolean hard_fallback "$ROAM_HARD_FALLBACK"
+json_add_int hard_delay "$ROAM_HARD_DELAY"
+json_add_int hard_window "$ROAM_HARD_WINDOW"
+json_add_string scope pair
+json_close_object
+
+json_add_array radios
+add_radio wl0
+add_radio wl1
+[ "$ENABLE_5G_LEGACY" != 1 ] || add_radio wl1.1
+json_close_array
+
+json_add_array warnings
+[ "$recovery" != 1 ] || json_add_string '' recovery_mode
+[ "$peer_online" = 1 ] || json_add_string '' peer_offline
+[ "$config_synced" = 1 ] || json_add_string '' config_drift
+[ "$channel_plan_ok" = 1 ] || json_add_string '' channel_overlap
+[ "$radios_ready" = 1 ] || json_add_string '' radio_offline
+[ "$txpower_ok" = 1 ] || json_add_string '' txpower_mismatch
+case "$selected_channel_5g" in 52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144) json_add_string '' dfs_channel ;; esac
+[ "$WIFI_CONFIG_VERSION" = 3 ] || json_add_string '' legacy_schema
+json_close_array
+
+json_add_array events
+events="$(tail -n 50 "$EVENT_FILE" 2>/dev/null)"
+if [ -n "$events" ]; then
+	while IFS= read -r event; do json_add_string '' "$event"; done <<EOF
+$events
+EOF
+fi
+json_close_array
+json_dump

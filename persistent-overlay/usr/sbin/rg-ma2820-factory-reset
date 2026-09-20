@@ -1,0 +1,15 @@
+#!/bin/sh
+# Restore the immutable defaults: DHCP AP mode, root:root, and open Wi-Fi.
+
+set -eu
+
+[ "${1:-}" = --yes ] || {
+	echo "usage: $0 --yes" >&2
+	exit 2
+}
+
+/usr/libexec/rg-ma2820/bootstate retry
+firstboot -y
+sync
+echo 'Configuration erased; rebooting to root:root and the open default WLAN.'
+reboot

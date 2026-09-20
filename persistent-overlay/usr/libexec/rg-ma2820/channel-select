@@ -1,0 +1,111 @@
+#!/bin/sh
+# Pick a low-interference, peer-safe channel from the conservative AP set.
+
+set -u
+
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+SCAN_WAIT=${RG_MA2820_SCAN_WAIT:-4}
+SCAN_RESULTS=${RG_MA2820_SCAN_RESULTS:-}
+COUNTRY=${RG_MA2820_COUNTRY:-}
+
+usage()
+{
+	echo "usage: $0 INTERFACE 2g|5g FALLBACK [PEER_CHANNEL]" >&2
+	exit 2
+}
+
+[ "$#" -ge 3 ] && [ "$#" -le 4 ] || usage
+interface=$1
+band=$2
+fallback=$3
+peer_channel=${4:-}
+
+case "$band:$fallback" in
+	2g:1|2g:6|2g:11|5g:36|5g:149) ;;
+	*) usage ;;
+esac
+
+temporary=
+cleanup()
+{
+	[ -z "$temporary" ] || rm -f "$temporary"
+}
+trap cleanup EXIT INT TERM
+
+if [ -n "$SCAN_RESULTS" ]; then
+	results=$SCAN_RESULTS
+else
+	temporary=$(mktemp "/tmp/rg-ma2820-scan-${interface}.XXXXXX") || {
+		echo "$fallback"
+		exit 0
+	}
+	results=$temporary
+	[ -z "$COUNTRY" ] || "$WL" -i "$interface" country "$COUNTRY" >/dev/null 2>&1 || true
+	"$WL" -i "$interface" up >/dev/null 2>&1 || true
+	if ! "$WL" -i "$interface" scan >/dev/null 2>&1; then
+		echo "$fallback"
+		exit 0
+	fi
+	sleep "$SCAN_WAIT"
+	if ! "$WL" -i "$interface" scanresults > "$results" 2>/dev/null; then
+		echo "$fallback"
+		exit 0
+	fi
+fi
+
+awk -v band="$band" -v fallback="$fallback" -v avoid="$peer_channel" '
+	function absolute(value) { return value < 0 ? -value : value }
+	function strength(rssi) {
+		value = 100 + rssi
+		if (value < 1) value = 1
+		if (value > 70) value = 70
+		return value
+	}
+	BEGIN {
+		score[1] = score[6] = score[11] = 0
+		score[36] = score[149] = 0
+	}
+	$1 == "Mode:" {
+		rssi = channel = width = ""
+		for (field = 1; field <= NF; field++) {
+			if ($field == "RSSI:") rssi = $(field + 1)
+			if ($field == "Channel:") channel = $(field + 1)
+		}
+		if (rssi !~ /^-[0-9]+$/ || channel !~ /^[0-9]+/) next
+		split(channel, parts, "/")
+		channel = parts[1] + 0
+		width = parts[2] + 0
+		weight = strength(rssi + 0)
+		if (band == "2g") {
+			for (candidate = 1; candidate <= 11; candidate += 5) {
+				distance = absolute(channel - candidate)
+				if (distance < 5)
+					score[candidate] += weight * (5 - distance)
+			}
+		} else {
+			# An 80/160 MHz BSS consumes more airtime across the block than
+			# a narrow neighbor, so give it a modest extra penalty.
+			multiplier = width >= 160 ? 3 : (width >= 80 ? 2 : 1)
+			if (channel >= 36 && channel <= 48)
+				score[36] += weight * multiplier
+			if (channel >= 149 && channel <= 161)
+				score[149] += weight * multiplier
+		}
+	}
+	END {
+		if (band == "2g") {
+			if (avoid == 1 || avoid == 6 || avoid == 11)
+				score[avoid] += 1000000
+			best = fallback
+			for (candidate = 1; candidate <= 11; candidate += 5)
+				if (score[candidate] < score[best]) best = candidate
+		} else {
+			if (avoid >= 36 && avoid <= 48) score[36] += 1000000
+			if (avoid >= 149 && avoid <= 161) score[149] += 1000000
+			best = fallback
+			if (score[36] < score[best]) best = 36
+			if (score[149] < score[best]) best = 149
+		}
+		print best
+	}
+' "$results"

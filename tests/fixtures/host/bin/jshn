@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""Minimal host-side encoder for the json_dump subset used by source tests."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def value(node: str, prefix: str = ""):
+    result = [] if node.startswith("J_A") else {}
+    keys = os.environ.get(f"{prefix}K_{node}", "").split()
+    for key in keys:
+        env_key = f"{prefix}{node}_{key}"
+        item_type = os.environ.get(f"{prefix}T_{node}_{key}", "string")
+        raw = os.environ.get(env_key, "")
+        name = os.environ.get(f"{prefix}N_{node}_{key}", key)
+        if item_type in {"object", "array"}:
+            item = value(raw, prefix)
+        elif item_type == "int":
+            item = int(raw or 0)
+        elif item_type == "double":
+            item = float(raw or 0)
+        elif item_type == "boolean":
+            item = raw.lower() in {"1", "true", "yes"}
+        elif item_type == "null":
+            item = None
+        else:
+            item = raw
+        if isinstance(result, list):
+            result.append(item)
+        else:
+            result[name] = item
+    return result
+
+
+def main() -> int:
+    args = iter(sys.argv[1:])
+    prefix = ""
+    pretty = False
+    for arg in args:
+        if arg == "-p":
+            prefix = next(args)
+        elif arg == "-i":
+            pretty = True
+        elif arg in {"-w", "-n"}:
+            continue
+        else:
+            print(f"unsupported test-fixture option: {arg}", file=sys.stderr)
+            return 2
+    separators = None if pretty else (",", ":")
+    print(json.dumps(value("J_V", prefix), ensure_ascii=False, indent=2 if pretty else None,
+                     separators=separators))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,59 @@
+From: RG-MA2820 OpenWrt port
+Subject: [PATCH] ubusd: fall back when old kernels reject GRND_INSECURE
+
+GRND_INSECURE was added in Linux 5.6.  The vendor kernel retained by the
+RG-MA2820(T) hybrid image is Linux 4.1 and returns EINVAL for that flag.
+Without a fallback ubusd cannot allocate its first object ID, exits, and
+procd remains forever in STATE_UBUS.
+
+Use /dev/urandom when the running kernel does not implement either the
+getrandom syscall or the newer flag.  This preserves the non-blocking boot
+semantics intended by GRND_INSECURE.
+
+--- a/ubusd_id.c
++++ b/ubusd_id.c
+@@ -11,6 +11,7 @@
+  */
+
+ #include <stdio.h>
++#include <errno.h>
+ #include <stdlib.h>
+ #include <unistd.h>
+ #include <fcntl.h>
+@@ -27,29 +28,31 @@
+ #include "ubusmsg.h"
+ #include "ubusd_id.h"
+
+-#ifndef __linux__
+ static int random_fd = -1;
+-#endif
+
+ static ssize_t read_random(void *buf, size_t len)
+ {
+ #ifdef __linux__
++	ssize_t ret;
++
+ 	/*
+ 	 * IDs only need to be hard to guess, not crypto-strong.
+ 	 * GRND_INSECURE returns bytes without blocking on the CRNG, so
+ 	 * ubusd does not stall boot on boards whose pool seeds late.
+ 	 */
+-	return getrandom(buf, len, GRND_INSECURE);
+-#else
++	ret = getrandom(buf, len, GRND_INSECURE);
++	if (ret >= 0 || (errno != EINVAL && errno != ENOSYS))
++		return ret;
++#endif
++
+ 	if (random_fd < 0) {
+ 		random_fd = open("/dev/urandom", O_RDONLY);
+ 		if (random_fd < 0) {
+ 			perror("open /dev/urandom");
+ 			return -1;
+ 		}
+ 	}
+ 	return read(random_fd, buf, len);
+-#endif
+ }
+
+ static int ubus_cmp_id(const void *k1, const void *k2, void *ptr)

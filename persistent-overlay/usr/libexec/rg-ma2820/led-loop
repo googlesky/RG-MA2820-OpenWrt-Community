@@ -1,0 +1,465 @@
+#!/bin/sh
+# Turn the five front-panel indicators into a compact operational dashboard.
+
+set -u
+
+LED_PROC=${RG_MA2820_LED_PROC:-/proc/factory_led}
+ENET_CONTROL=${RG_MA2820_ENET_CONTROL:-/proc/driver/enet/cmd}
+PROC_PRINTF=${RG_MA2820_PROC_PRINTF:-/usr/bin/printf}
+STATE_FILE=${RG_MA2820_LED_STATE:-/var/run/rg-ma2820-led.state}
+NET_CLASS=${RG_MA2820_NET_CLASS:-/sys/class/net}
+NET_DEV=${RG_MA2820_NET_DEV:-/proc/net/dev}
+THERMAL_ZONE=${RG_MA2820_THERMAL_ZONE:-/sys/class/thermal/thermal_zone0}
+BAD_PEB_FILE=${RG_MA2820_BAD_PEB_FILE:-/sys/class/ubi/ubi0/bad_peb_count}
+WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+WIFI_STATE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
+PEER_STATE=${RG_MA2820_PEER_WIFI_STATE:-/var/run/rg-ma2820-peer-wifi.state}
+BOOTSTATE=${RG_MA2820_BOOTSTATE:-/usr/libexec/rg-ma2820/bootstate}
+RECOVERY_MARKER=${RG_MA2820_RECOVERY_MARKER:-/etc/rg-ma2820/recovery-root}
+ROAMING_INIT=${RG_MA2820_ROAMING_INIT:-/etc/init.d/rg-ma2820-roaming}
+NEIGHBOR_INIT=${RG_MA2820_NEIGHBOR_INIT:-/etc/init.d/rg-ma2820-neighbor-sync}
+IP=${RG_MA2820_IP:-ip}
+PING=${RG_MA2820_PING:-ping}
+HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
+PIDOF=${RG_MA2820_PIDOF:-pidof}
+DATE=${RG_MA2820_DATE:-date}
+SLEEP=${RG_MA2820_SLEEP:-sleep}
+TICK_SECONDS=${RG_MA2820_LED_TICK_SECONDS:-1}
+PULSE_SLEEP=${RG_MA2820_LED_PULSE_SLEEP:-/usr/bin/ucode}
+TRAFFIC_HELPER=${RG_MA2820_LED_TRAFFIC_HELPER:-/usr/libexec/rg-ma2820/led-traffic}
+WAN_COLOR_MODE=${RG_MA2820_LED_WAN_COLOR_MODE:-direction}
+PROBE_TICKS=${RG_MA2820_LED_PROBE_TICKS:-5}
+WAN_FAILURE_LIMIT=${RG_MA2820_LED_WAN_FAILURE_LIMIT:-3}
+ONESHOT=${RG_MA2820_LED_ONESHOT:-0}
+phase=${RG_MA2820_LED_PHASE:-0}
+
+# Exact opcodes from the stock RG-MA2820(T) hwtest.ini:
+# power green=16, WAN red=15, WAN green=14, LAN green=13,
+# Wi-Fi green=12, WPS green=3. Suffix 0=off, 1=on. Stock boardLedCtrl
+# state 4 toggles every 125 ms using its kernel timer (~4 Hz full cycles).
+last_power=
+last_wan_red=
+last_wan_green=
+last_lan=
+last_wifi=
+last_mesh=
+wan_failures=0
+uplink_status=probing
+wan_status=disconnected
+last_wifi_bytes=
+traffic_pid=
+traffic_running=0
+wifi_activity=0
+peer_activity=0
+
+state_value()
+{
+	[ -r "$1" ] || return 0
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1
+}
+
+read_number()
+{
+	local value
+	value="$(cat "$1" 2>/dev/null)"
+	case "$value" in ''|*[!0-9]*) printf '0\n' ;; *) printf '%s\n' "$value" ;; esac
+}
+
+drive_led()
+{
+	local name="$1" opcode="$2" value="$3" previous command
+	eval "previous=\${last_${name}:-}"
+	[ "$previous" != "$value" ] || return 0
+	[ -w "$LED_PROC" ] || return 1
+	command="${opcode}0${value}"
+	# procd preloads libsetlbf, which can fragment literal printf commands.
+	# A fresh applet without that preload submits each proc command atomically.
+	LD_PRELOAD= "$PROC_PRINTF" '%s' "$command" > "$LED_PROC" || return 1
+	eval "last_${name}=$value"
+}
+
+read_port_links()
+{
+	local interface
+	wan_carrier=0
+	lan_carrier=0
+	connected_lan_interfaces=
+	[ "$(read_number "$NET_CLASS/eth0/carrier")" != 1 ] || wan_carrier=1
+	# Stock port mapping: internal eth0 is WAN; external eth1..eth4 are LAN.
+	# Bridging the sockets does not merge their physical indicators.
+	for interface in eth1 eth2 eth3 eth4; do
+		[ "$(read_number "$NET_CLASS/$interface/carrier")" = 1 ] || continue
+		lan_carrier=1
+		connected_lan_interfaces="$connected_lan_interfaces $interface"
+	done
+	carrier=$((wan_carrier | lan_carrier))
+}
+
+update_port_status()
+{
+	wan_status=disconnected
+	if [ "$wan_carrier" = 1 ]; then
+		if [ "$WAN_COLOR_MODE" = direction ]; then
+			wan_status=ready
+		else
+			wan_status=$uplink_status
+		fi
+	fi
+	lan_status=disconnected
+	[ "$lan_carrier" = 0 ] || lan_status=ready
+}
+
+management_address()
+{
+	$IP -4 addr show dev br-lan 2>/dev/null |
+		sed -n 's/.*inet \([0-9.]*\)\/[0-9][0-9]*.*/\1/p' |
+		grep -v '^169\.254\.' | head -n 1
+}
+
+default_gateway()
+{
+	$IP -4 route show default 2>/dev/null |
+		sed -n 's/^default via \([^ ]*\).*/\1/p' | head -n 1
+}
+
+hostapd_enabled()
+{
+	$HOSTAPD_CLI -p /var/run/hostapd -i "$1" status 2>/dev/null |
+		grep -q '^state=ENABLED$'
+}
+
+gateway_reachable()
+{
+	local gateway="$1"
+	[ -n "$gateway" ] || return 1
+	$PING -c 1 -W 1 "$gateway" >/dev/null 2>&1 && return 0
+	# Some gateways deliberately ignore ICMP. A live ARP/neighbor entry is
+	# enough for an AP bridge to consider its local uplink usable.
+	$IP neigh show "$gateway" dev br-lan 2>/dev/null |
+		grep -Eq ' (REACHABLE|STALE|DELAY|PROBE|PERMANENT)( |$)'
+}
+
+mesh_health()
+{
+	local local_profile peer_profile local_hash peer_hash local_2g peer_2g
+	local local_5g peer_5g radio_2g radio_5g
+	[ "${WIFI_PROFILE:-factory}" = wired-mesh ] || return 2
+	$PING -c 1 -W 1 "${PEER_LINK_LOCAL:-127.0.0.1}" >/dev/null 2>&1 || return 1
+	peer_activity=1
+	local_profile="$(state_value "$WIFI_STATE" PROFILE)"
+	peer_profile="$(state_value "$PEER_STATE" PROFILE)"
+	local_hash="$(state_value "$WIFI_STATE" CONFIG_HASH)"
+	peer_hash="$(state_value "$PEER_STATE" CONFIG_HASH)"
+	[ "$local_profile" = wired-mesh ] && [ "$peer_profile" = wired-mesh ] || return 1
+	[ -n "$local_hash" ] && [ "$local_hash" = "$peer_hash" ] || return 1
+
+	radio_2g="$(state_value "$WIFI_STATE" RADIO_2G_ENABLED)"
+	radio_5g="$(state_value "$WIFI_STATE" RADIO_5G_ENABLED)"
+	local_2g="$(state_value "$WIFI_STATE" CHANNEL_2G)"
+	peer_2g="$(state_value "$PEER_STATE" CHANNEL_2G)"
+	local_5g="$(state_value "$WIFI_STATE" CENTER_CHANNEL_5G)"
+	peer_5g="$(state_value "$PEER_STATE" CENTER_CHANNEL_5G)"
+	[ "$radio_2g" != 1 ] || { [ -n "$local_2g" ] && [ "$local_2g" != "$peer_2g" ]; } || return 1
+	[ "$radio_5g" != 1 ] || { [ -n "$local_5g" ] && [ "$local_5g" != "$peer_5g" ]; } || return 1
+	"$ROAMING_INIT" status >/dev/null 2>&1 || return 1
+	"$NEIGHBOR_INIT" status >/dev/null 2>&1 || return 1
+	return 0
+}
+
+write_state()
+{
+	local management="$1" gateway="$2" reachable="$3"
+	local bad_pebs="$4" temperature="$5" trip="$6" directory
+	directory=${STATE_FILE%/*}
+	[ "$directory" != "$STATE_FILE" ] || directory=.
+	mkdir -p "$directory" 2>/dev/null || return 0
+	(
+		umask 022
+		{
+			echo "UPDATED=$($DATE +%s 2>/dev/null)"
+			echo "POWER=$power_status"
+			echo "UPLINK=$uplink_status"
+			echo "WAN=$wan_status"
+			echo "LAN=$lan_status"
+			echo "WIFI=$wifi_status"
+			echo "MESH=$mesh_status"
+			echo "CARRIER=$carrier"
+			echo "WAN_CARRIER=$wan_carrier"
+			echo "LAN_CARRIER=$lan_carrier"
+			echo "WAN_COLOR_MODE=$WAN_COLOR_MODE"
+			echo "MANAGEMENT_ADDRESS=$management"
+			echo "DEFAULT_GATEWAY=$gateway"
+			echo "GATEWAY_REACHABLE=$reachable"
+			echo "RADIOS_READY=$radios_ready"
+			echo "RADIOS_EXPECTED=$radios_expected"
+			echo "PEER_ONLINE=$peer_online"
+			echo "BAD_PEBS=$bad_pebs"
+			echo "TEMPERATURE_MC=$temperature"
+			echo "THERMAL_TRIP_MC=$trip"
+		} > "$STATE_FILE.new" && mv -f "$STATE_FILE.new" "$STATE_FILE"
+	) || true
+}
+
+probe_status()
+{
+	local management gateway reachable=0 expected=0 ready=0 mesh_result
+	local boot_state pending booting bad_pebs temperature trip critical core_ready=1
+	local process trip_file trip_value
+	# Wi-Fi settings can be applied without rebooting this service.
+	[ -r "$WIFI_ENV" ] && . "$WIFI_ENV"
+
+	read_port_links
+	management="$(management_address)"
+	gateway="$(default_gateway)"
+	[ -z "$management" ] && management_ready=0 || management_ready=1
+	if [ "$carrier" = 1 ] && [ "$management_ready" = 1 ] && gateway_reachable "$gateway"; then
+		reachable=1
+		wan_failures=0
+		uplink_status=online
+	else
+		wan_failures=$((wan_failures + 1))
+		if [ "$carrier" = 0 ]; then
+			uplink_status=offline
+		elif [ "$wan_failures" -ge "$WAN_FAILURE_LIMIT" ]; then
+			uplink_status=degraded
+		elif [ "$uplink_status" != online ]; then
+			uplink_status=probing
+		fi
+	fi
+
+	update_port_status
+
+	RADIO_2G_ENABLED=${RADIO_2G_ENABLED:-1}
+	RADIO_5G_ENABLED=${RADIO_5G_ENABLED:-1}
+	ENABLE_5G_LEGACY=${ENABLE_5G_LEGACY:-0}
+	if [ "$RADIO_2G_ENABLED" = 1 ]; then
+		expected=$((expected + 1)); hostapd_enabled wl0 && ready=$((ready + 1))
+	fi
+	if [ "$RADIO_5G_ENABLED" = 1 ]; then
+		expected=$((expected + 1)); hostapd_enabled wl1 && ready=$((ready + 1))
+		if [ "$ENABLE_5G_LEGACY" = 1 ]; then
+			expected=$((expected + 1)); hostapd_enabled wl1.1 && ready=$((ready + 1))
+		fi
+	fi
+	if [ "$expected" = 0 ]; then
+		wifi_status=disabled
+	elif [ "$ready" = "$expected" ]; then
+		wifi_status=ready
+	elif [ "$ready" = 0 ]; then
+		wifi_status=offline
+	else
+		wifi_status=degraded
+	fi
+	radios_ready=$ready
+	radios_expected=$expected
+
+	mesh_result=0
+	mesh_health || mesh_result=$?
+	case "$mesh_result" in
+		0) mesh_status=ready; peer_online=1 ;;
+		1)
+			if $PING -c 1 -W 1 "${PEER_LINK_LOCAL:-127.0.0.1}" >/dev/null 2>&1; then
+				mesh_status=syncing; peer_online=1
+			else
+				mesh_status=offline; peer_online=0
+			fi
+			;;
+		*) mesh_status=disabled; peer_online=0 ;;
+	esac
+
+	boot_state="$($BOOTSTATE status 2>/dev/null)"
+	pending="$(printf '%s\n' "$boot_state" | sed -n 's/^pending=//p' | head -n 1)"
+	booting="$(printf '%s\n' "$boot_state" | sed -n 's/^booting=//p' | head -n 1)"
+	bad_pebs="$(read_number "$BAD_PEB_FILE")"
+	temperature="$(read_number "$THERMAL_ZONE/temp")"
+	trip=0
+	for trip_file in "$THERMAL_ZONE"/trip_point_*_temp; do
+		[ -r "$trip_file" ] || continue
+		trip_value="$(read_number "$trip_file")"
+		[ "$trip_value" -ge 80000 ] || continue
+		[ "$trip" -ne 0 ] && [ "$trip_value" -ge "$trip" ] || trip=$trip_value
+	done
+	[ "$trip" -gt 5000 ] && critical=$((trip - 5000)) || critical=105000
+	for process in dropbear uhttpd rpcd; do
+		$PIDOF "$process" >/dev/null 2>&1 || core_ready=0
+	done
+	if [ "$bad_pebs" -gt 0 ] || [ "$temperature" -ge "$critical" ] || [ "$core_ready" = 0 ]; then
+		power_status=fault
+	elif [ -e "$RECOVERY_MARKER" ]; then
+		power_status=recovery
+	elif { [ -n "$pending" ] && [ "$pending" != none ]; } ||
+		{ [ -n "$booting" ] && [ "$booting" != none ]; }; then
+		power_status=trial
+	else
+		power_status=normal
+	fi
+
+	write_state "$management" "$gateway" "$reachable" "$bad_pebs" "$temperature" "$trip"
+}
+
+apply_pattern()
+{
+	local power=1 wan_red=0 wan_green=0 lan=0 wifi=0 mesh=0 slow fast
+	fast=$((phase % 2))
+	[ "$phase" -lt 2 ] && slow=1 || slow=0
+	case "$power_status" in
+		normal) power=1 ;;
+		trial|recovery) power=$slow ;;
+		*) power=$fast ;;
+	esac
+	case "$wan_status" in
+		ready|online) wan_green=1 ;;
+		probing) wan_green=$slow ;;
+		disconnected) : ;;
+		*) wan_red=1 ;;
+	esac
+	case "$lan_status" in
+		ready) lan=1 ;;
+		addressing) lan=$slow ;;
+	esac
+	case "$wifi_status" in
+		ready) wifi=1; [ "$wifi_activity" = 0 ] || wifi=4 ;;
+		degraded) wifi=$fast ;;
+	esac
+	case "$mesh_status" in ready) mesh=1 ;; syncing) mesh=$slow ;; esac
+
+	drive_led power 16 "$power" || true
+	# The continuous controller exclusively owns physical Ethernet outputs.
+	# Steady status is only a fallback if that child is unavailable.
+	if [ "$traffic_running" = 0 ]; then
+		drive_led wan_red 15 "$wan_red" || true
+		drive_led wan_green 14 "$wan_green" || true
+		drive_led lan 13 "$lan" || true
+	fi
+	drive_led wifi 12 "$wifi" || true
+	drive_led mesh 3 "$mesh" || true
+}
+
+sample_activity()
+{
+	[ -f "$NET_DEV" ] && [ -r "$NET_DEV" ] || return 1
+	# Wi-Fi keeps its independent stock activity mode. Wired counters are
+	# read continuously by led-traffic and never replayed by this slow loop.
+	wifi_bytes="$(awk '
+		/:/ {
+			gsub(/:/, " ")
+			if ($1 ~ /^wl[0-9]+([.][0-9]+)?$/) wifi += $2 + $10
+		}
+		END { printf "%.0f\n", wifi }
+	' "$NET_DEV" 2>/dev/null)" || return 1
+	case "$wifi_bytes" in ''|*[!0-9]*) return 1 ;; esac
+}
+
+update_activity()
+{
+	local wifi_bytes
+	read_port_links
+	update_port_status
+	wifi_activity=0
+	if sample_activity; then
+		[ -z "$last_wifi_bytes" ] || [ "$wifi_bytes" -le "$last_wifi_bytes" ] || wifi_activity=1
+		last_wifi_bytes=$wifi_bytes
+	else
+		last_wifi_bytes=
+	fi
+}
+
+ensure_traffic()
+{
+	[ "$ONESHOT" = 0 ] || return 0
+	if [ -n "$traffic_pid" ] && kill -0 "$traffic_pid" 2>/dev/null; then
+		return 0
+	fi
+	if [ -n "$traffic_pid" ]; then
+		wait "$traffic_pid" 2>/dev/null || true
+		echo 'Ethernet activity controller exited; restarting' >&2
+	fi
+	traffic_pid=
+	traffic_running=0
+	last_wan_red= last_wan_green= last_lan=
+	[ -x "$TRAFFIC_HELPER" ] || return 0
+	"$TRAFFIC_HELPER" "$WAN_COLOR_MODE" &
+	traffic_pid=$!
+	traffic_running=1
+}
+
+stop_traffic()
+{
+	if [ -n "$traffic_pid" ]; then
+		kill "$traffic_pid" 2>/dev/null || true
+		wait "$traffic_pid" 2>/dev/null || true
+	fi
+	traffic_pid=
+	traffic_running=0
+}
+
+pulse_peer_activity()
+{
+	local pulse=0
+	# A successful peer probe is an actual request/reply exchange. Pulse once
+	# per observed exchange, not on an unconditional heartbeat timer.
+	if [ "$peer_activity" = 1 ] && [ "$mesh_status" = ready ]; then
+		drive_led mesh 3 0 || true
+		pulse=1
+	fi
+	peer_activity=0
+	[ "$pulse" = 1 ] || return 0
+	# This target's BusyBox sleep accepts integers only. ucode is already a
+	# required runtime component and provides millisecond sleep.
+	"$PULSE_SLEEP" -e 'sleep(100);'
+	# Restore the health pattern, never overwrite a failure with traffic.
+	apply_pattern
+}
+
+all_off()
+{
+	# A child may be interrupted mid-burst: do not trust cached steady values.
+	last_wan_red= last_wan_green= last_lan=
+	drive_led wan_red 15 0 || true
+	drive_led wan_green 14 0 || true
+	drive_led lan 13 0 || true
+	drive_led wifi 12 0 || true
+	drive_led mesh 3 0 || true
+	drive_led power 16 0 || true
+}
+
+[ -r "$WIFI_ENV" ] && . "$WIFI_ENV"
+[ -r "$DEVICE_ENV" ] && . "$DEVICE_ENV"
+case "$WAN_COLOR_MODE" in direction|green) ;; *) WAN_COLOR_MODE=direction ;; esac
+
+# The retained Ethernet driver otherwise overwrites WAN/LAN periodically
+# using RGOS-only files such as /var/.WanConnectIP. Its factory_mode flag
+# gates LED callbacks only; Ethernet forwarding and link tracking continue.
+# Acquire ownership before any output is written, including after a restart.
+if [ ! -w "$ENET_CONTROL" ] ||
+	! LD_PRELOAD= "$PROC_PRINTF" 'factory_mode 1\n' > "$ENET_CONTROL"; then
+	echo 'Cannot acquire Ethernet LED control' >&2
+	exit 1
+fi
+
+# Clear bootloader/vendor leftovers first, especially a stale red WAN branch.
+drive_led power 16 1 || true
+drive_led wan_red 15 0 || true
+drive_led wan_green 14 0 || true
+drive_led lan 13 0 || true
+drive_led wifi 12 0 || true
+drive_led mesh 3 0 || true
+
+trap 'stop_traffic; all_off; exit 0' INT TERM
+probe_status
+ticks=0
+while true; do
+	ensure_traffic
+	update_activity
+	apply_pattern
+	[ "$ONESHOT" = 1 ] && exit 0
+	pulse_peer_activity
+	$SLEEP "$TICK_SECONDS"
+	phase=$(((phase + 1) % 4))
+	ticks=$((ticks + 1))
+	if [ "$ticks" -ge "$PROBE_TICKS" ]; then
+		probe_status
+		ticks=0
+	fi
+done

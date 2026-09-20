@@ -1,0 +1,134 @@
+--- a/system-linux.c
++++ b/system-linux.c
+@@ -1595,85 +1595,79 @@ static inline unsigned long
+
+ int system_bridge_addbr(struct device *bridge, struct bridge_config *cfg)
+ {
+-	struct nlattr *linkinfo, *data;
+-	struct nl_msg *msg;
+-	uint64_t val;
+-	int rv;
++	int val;
+
+-	msg = system_ifinfo_msg(bridge->ifname, RTM_NEWLINK, NLM_F_CREATE | NLM_F_EXCL);
+-	if (!msg)
++	/*
++	 * Some vendor 4.1 kernels expose newer bridge UAPI constants while
++	 * retaining an older rtnl policy.  Passing modern IFLA_BR_* attributes
++	 * to RTM_NEWLINK can then trip validate_nla()'s BUG_ON.  The legacy
++	 * bridge ioctl plus sysfs is supported by both those kernels and Linux
++	 * versions used by older netifd releases.
++	 */
++	if (ioctl(sock_ioctl, SIOCBRADDBR, bridge->ifname) < 0)
+ 		return -1;
+
+-	if (!(linkinfo = nla_nest_start(msg, IFLA_LINKINFO)))
+-		goto nla_put_failure;
+-
+-	nla_put_string(msg, IFLA_INFO_KIND, "bridge");
+-
+-	if (!(data = nla_nest_start(msg, IFLA_INFO_DATA)))
+-		goto nla_put_failure;
+-
+-	nla_put_u32(msg, IFLA_BR_STP_STATE, cfg->stp);
+-	nla_put_u32(msg, IFLA_BR_FORWARD_DELAY, sec_to_jiffies(cfg->forward_delay));
+-	nla_put_u8(msg, IFLA_BR_MCAST_SNOOPING, !!cfg->igmp_snoop);
+-	nla_put_u8(msg, IFLA_BR_MCAST_QUERIER, !!cfg->multicast_querier);
+-	nla_put_u32(msg, IFLA_BR_MCAST_HASH_MAX, cfg->hash_max);
++	system_bridge_set_stp_state(bridge, cfg->stp);
++	system_set_dev_sysfs_int("bridge/forward_delay", bridge->ifname,
++				 sec_to_jiffies(cfg->forward_delay));
++	system_set_dev_sysfs_int("bridge/multicast_snooping", bridge->ifname,
++				 !!cfg->igmp_snoop);
++	system_set_dev_sysfs_int("bridge/multicast_querier", bridge->ifname,
++				 !!cfg->multicast_querier);
++	system_set_dev_sysfs_int("bridge/hash_max", bridge->ifname, cfg->hash_max);
++	system_set_dev_sysfs_int("bridge/vlan_filtering", bridge->ifname,
++				 !!cfg->vlan_filtering);
++	system_set_dev_sysfs_int("bridge/priority", bridge->ifname, cfg->priority);
++	system_set_dev_sysfs_int("bridge/hello_time", bridge->ifname,
++				 sec_to_jiffies(cfg->hello_time));
++	system_set_dev_sysfs_int("bridge/max_age", bridge->ifname,
++				 sec_to_jiffies(cfg->max_age));
+
+ 	if (bridge->settings.flags & DEV_OPT_MULTICAST_ROUTER)
+-		nla_put_u8(msg, IFLA_BR_MCAST_ROUTER, !!bridge->settings.multicast_router);
++		system_set_dev_sysfs_int("bridge/multicast_router", bridge->ifname,
++					 bridge->settings.multicast_router);
+
+ 	if (cfg->flags & BRIDGE_OPT_ROBUSTNESS) {
+-		nla_put_u32(msg, IFLA_BR_MCAST_STARTUP_QUERY_CNT, cfg->robustness);
+-		nla_put_u32(msg, IFLA_BR_MCAST_LAST_MEMBER_CNT, cfg->robustness);
++		system_set_dev_sysfs_int("bridge/multicast_startup_query_count",
++					 bridge->ifname, cfg->robustness);
++		system_set_dev_sysfs_int("bridge/multicast_last_member_count",
++					 bridge->ifname, cfg->robustness);
+ 	}
+
+ 	if (cfg->flags & BRIDGE_OPT_QUERY_INTERVAL)
+-		nla_put_u64(msg, IFLA_BR_MCAST_QUERY_INTVL, cfg->query_interval);
++		system_set_dev_sysfs_int("bridge/multicast_query_interval",
++					 bridge->ifname, cfg->query_interval);
+
+ 	if (cfg->flags & BRIDGE_OPT_QUERY_RESPONSE_INTERVAL)
+-		nla_put_u64(msg, IFLA_BR_MCAST_QUERY_RESPONSE_INTVL, cfg->query_response_interval);
++		system_set_dev_sysfs_int("bridge/multicast_query_response_interval",
++					 bridge->ifname, cfg->query_response_interval);
+
+ 	if (cfg->flags & BRIDGE_OPT_LAST_MEMBER_INTERVAL)
+-		nla_put_u64(msg, IFLA_BR_MCAST_LAST_MEMBER_INTVL, cfg->last_member_interval);
++		system_set_dev_sysfs_int("bridge/multicast_last_member_interval",
++					 bridge->ifname, cfg->last_member_interval);
+
+ 	if (cfg->flags & BRIDGE_OPT_ROBUSTNESS ||
+ 	    cfg->flags & BRIDGE_OPT_QUERY_INTERVAL ||
+ 	    cfg->flags & BRIDGE_OPT_QUERY_RESPONSE_INTERVAL) {
+ 		val = cfg->robustness * cfg->query_interval +
+ 			cfg->query_response_interval;
+-
+-		nla_put_u64(msg, IFLA_BR_MCAST_MEMBERSHIP_INTVL, val);
++		system_set_dev_sysfs_int("bridge/multicast_membership_interval",
++					 bridge->ifname, val);
+
+ 		val -= cfg->query_response_interval / 2;
+-
+-		nla_put_u64(msg, IFLA_BR_MCAST_QUERIER_INTVL, val);
+-	}
+-
+-	if (cfg->flags & BRIDGE_OPT_QUERY_INTERVAL) {
+-		val = cfg->query_interval / 4;
+-
+-		nla_put_u64(msg, IFLA_BR_MCAST_STARTUP_QUERY_INTVL, val);
++		system_set_dev_sysfs_int("bridge/multicast_querier_interval",
++					 bridge->ifname, val);
+ 	}
+
+-	nla_put_u8(msg, IFLA_BR_VLAN_FILTERING, !!cfg->vlan_filtering);
+-	nla_put_u16(msg, IFLA_BR_PRIORITY, cfg->priority);
+-	nla_put_u32(msg, IFLA_BR_HELLO_TIME, sec_to_jiffies(cfg->hello_time));
+-	nla_put_u32(msg, IFLA_BR_MAX_AGE, sec_to_jiffies(cfg->max_age));
++	if (cfg->flags & BRIDGE_OPT_QUERY_INTERVAL)
++		system_set_dev_sysfs_int("bridge/multicast_startup_query_interval",
++					 bridge->ifname, cfg->query_interval / 4);
+
+ 	if (cfg->flags & BRIDGE_OPT_AGEING_TIME)
+-		nla_put_u32(msg, IFLA_BR_AGEING_TIME, sec_to_jiffies(cfg->ageing_time));
+-
+-	nla_nest_end(msg, data);
+-	nla_nest_end(msg, linkinfo);
+-
+-	rv = system_rtnl_call(msg);
+-	if (rv)
+-		D(SYSTEM, "Error adding bridge '%s': %d", bridge->ifname, rv);
+-
+-	return rv;
++		system_set_dev_sysfs_int("bridge/ageing_time", bridge->ifname,
++					 sec_to_jiffies(cfg->ageing_time));
+
+-nla_put_failure:
+-	nlmsg_free(msg);
+-	return -ENOMEM;
++	return 0;
+ }
+
+ int system_macvlan_add(struct device *macvlan, struct device *dev, struct macvlan_config *cfg)

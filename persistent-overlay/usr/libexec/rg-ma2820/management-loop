@@ -1,0 +1,139 @@
+#!/bin/sh
+# DHCP-first AP management with deterministic link-local and isolated fallback.
+
+set -u
+
+. /etc/rg-ma2820/device.env
+
+TAG=rg-ma2820-management
+DNSMASQ_PID=/tmp/rg-ma2820-fallback-dnsmasq.pid
+MGMT_INTERFACE=mgmt
+
+log()
+{
+	logger -t "$TAG" "$*"
+	echo "$TAG: $*" > /dev/console
+}
+
+wait_for_bridge()
+{
+	local n=0
+	while [ ! -e /sys/class/net/br-lan/address ]; do
+		n=$((n + 1))
+		[ "$n" -lt 60 ] || return 1
+		sleep 1
+	done
+}
+
+derive_addresses()
+{
+	local rescue_tail
+	case "$RESCUE_LINK_LOCAL" in
+		169.254.*.*) ;;
+		*) log "invalid packaged rescue address: $RESCUE_LINK_LOCAL"; return 1 ;;
+	esac
+	rescue_tail=${RESCUE_LINK_LOCAL##*.}
+	case "$rescue_tail" in
+		''|*[!0-9]*) log "invalid packaged rescue address: $RESCUE_LINK_LOCAL"; return 1 ;;
+	esac
+	[ "$rescue_tail" -ge 1 ] && [ "$rescue_tail" -le 254 ] || {
+		log "invalid packaged rescue address: $RESCUE_LINK_LOCAL"
+		return 1
+	}
+
+	# A bridge can briefly carry a generated MAC before its physical ports join.
+	# Use the per-device value baked into the image so first boot cannot capture
+	# that transient address and make peer rescue unreachable.
+	LINK_LOCAL=$RESCUE_LINK_LOCAL
+	FALLBACK_X=$rescue_tail
+	FALLBACK_IP="10.44.${FALLBACK_X}.1"
+	FALLBACK_NET="10.44.${FALLBACK_X}"
+}
+
+ensure_link_local()
+{
+	ip -4 addr replace "$LINK_LOCAL/16" dev br-lan label br-lan:rescue
+}
+
+has_dhcp_address()
+{
+	ip -4 addr show dev br-lan 2>/dev/null |
+		awk '$1 == "inet" { print $2 }' |
+		grep -Evq '^169\.254\.'
+}
+
+stop_fallback()
+{
+	if [ -s "$DNSMASQ_PID" ]; then
+		kill "$(cat "$DNSMASQ_PID")" 2>/dev/null || true
+		for n in 1 2 3 4 5; do
+			[ -e "/proc/$(cat "$DNSMASQ_PID" 2>/dev/null)" ] || break
+			sleep 1
+		done
+	fi
+	rm -f "$DNSMASQ_PID"
+	ip addr del "$FALLBACK_IP/24" dev br-lan 2>/dev/null || true
+}
+
+start_fallback()
+{
+	ifdown "$MGMT_INTERFACE" >/dev/null 2>&1 || true
+	ensure_link_local
+	ip -4 addr replace "$FALLBACK_IP/24" dev br-lan label br-lan:fallback
+	/usr/sbin/dnsmasq \
+		--conf-file=/dev/null \
+		--interface=br-lan --bind-interfaces --except-interface=lo \
+		--dhcp-authoritative \
+		--dhcp-range="$FALLBACK_NET.100,$FALLBACK_NET.199,255.255.255.0,2m" \
+		--dhcp-option="option:router,$FALLBACK_IP" \
+		--dhcp-option="option:dns-server,$FALLBACK_IP" \
+		--domain=lan --local=/lan/ \
+		--address="/$(cat /proc/sys/kernel/hostname).lan/$FALLBACK_IP" \
+		--pid-file="$DNSMASQ_PID" \
+		--dhcp-leasefile=/tmp/rg-ma2820-fallback.leases
+	log "no upstream DHCP; recovery DHCP is $FALLBACK_IP/24 and link-local is $LINK_LOCAL"
+}
+
+wait_for_dhcp()
+{
+	local seconds="$1"
+	local n=0
+	ifup "$MGMT_INTERFACE" >/dev/null 2>&1 || true
+	while [ "$n" -lt "$seconds" ]; do
+		has_dhcp_address && return 0
+		sleep 1
+		n=$((n + 1))
+	done
+	return 1
+}
+
+wait_for_bridge || exit 1
+derive_addresses || exit 1
+ensure_link_local
+
+# AP2 wins an isolated-pair election by starting its fallback server first.
+# A lone AP3 still becomes reachable after the longer delay.
+[ "$DEVICE_ID" = ap2 ] && initial_wait=30 || initial_wait=60
+[ "$DEVICE_ID" = ap2 ] && probe_wait=60 || probe_wait=75
+
+while true; do
+	ensure_link_local
+	if wait_for_dhcp "$initial_wait"; then
+		log "management DHCP active; link-local fallback remains $LINK_LOCAL"
+		while has_dhcp_address; do
+			ensure_link_local
+			sleep 15
+		done
+		initial_wait=15
+		continue
+	fi
+
+	start_fallback || {
+		log 'could not start fallback DHCP; retaining link-local access'
+		sleep 15
+		continue
+	}
+	sleep "$probe_wait"
+	stop_fallback
+	initial_wait=15
+done

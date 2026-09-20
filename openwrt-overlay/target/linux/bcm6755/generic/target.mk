@@ -1,0 +1,4 @@
+ARCH:=arm
+SUBTARGET:=generic
+BOARDNAME:=BCM6755/BCM47622 recovery
+CPU_TYPE:=cortex-a7

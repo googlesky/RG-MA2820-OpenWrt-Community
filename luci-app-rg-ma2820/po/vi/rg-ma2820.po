@@ -1,0 +1,1135 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: luci-app-rg-ma2820\n"
+"PO-Revision-Date: 2026-09-20 00:00+0700\n"
+"Last-Translator: RG-MA2820 project\n"
+"Language-Team: Vietnamese\n"
+"Language: vi\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+msgid "RG-MA2820 Wi-Fi & Roaming"
+msgstr "Wi-Fi & chuyển vùng RG-MA2820"
+
+msgid "RG-MA2820 Wi-Fi & wired roaming"
+msgstr "Wi-Fi & chuyển vùng có dây RG-MA2820"
+
+msgid "Wi-Fi and wired roaming configuration"
+msgstr "Cấu hình Wi-Fi và chuyển vùng có dây"
+
+msgid "2.4 GHz"
+msgstr "2.4 GHz"
+
+msgid "5 GHz"
+msgstr "5 GHz"
+
+msgid "This page drives the Broadcom vendor stack directly because these radios are not managed by mac80211/netifd. Save & Apply validates the entire profile before either AP is changed."
+msgstr "Trang này điều khiển trực tiếp bộ phần mềm Broadcom vì các radio không được mac80211/netifd quản lý. Lưu & Áp dụng sẽ kiểm tra toàn bộ hồ sơ trước khi thay đổi bất kỳ AP nào."
+
+msgid "Ethernet is the backhaul. 802.11k/v and optional 802.11r help compatible clients move between the two BSS sets; the client always decides when to roam."
+msgstr "Ethernet là đường truyền backhaul. 802.11k/v và 802.11r tùy chọn giúp thiết bị tương thích di chuyển giữa hai tập BSS; thiết bị khách luôn là bên quyết định thời điểm chuyển vùng."
+
+msgid "General"
+msgstr "Tổng quát"
+
+msgid "Roaming & mesh"
+msgstr "Chuyển vùng & mesh"
+
+msgid "Driver advanced"
+msgstr "Driver nâng cao"
+
+msgid "Apply target"
+msgstr "Đích áp dụng"
+
+msgid "Pair mode updates the peer first over pinned-key SSH, then this AP. Manual channels require local mode so the APs are not assigned the same channel."
+msgstr "Chế độ cặp cập nhật AP ngang hàng trước qua SSH có khóa được ghim, sau đó mới đến AP này. Kênh thủ công yêu cầu chế độ cục bộ để hai AP không bị gán cùng kênh."
+
+msgid "Both wired APs (recommended)"
+msgstr "Cả hai AP có dây (khuyên dùng)"
+
+msgid "This AP only"
+msgstr "Chỉ AP này"
+
+msgid "Driver country profile"
+msgstr "Hồ sơ quốc gia của driver"
+
+msgid "The current “#a” Broadcom pseudo-domain exposes the largest driver channel set. Changing this also changes channel and power constraints."
+msgstr "Miền giả Broadcom “#a” hiện tại mở tập kênh lớn nhất của driver. Thay đổi mục này cũng thay đổi các giới hạn kênh và công suất."
+
+msgid "#a — Broadcom all-channel profile"
+msgstr "#a — hồ sơ mọi kênh Broadcom"
+
+msgid "Beacon interval"
+msgstr "Khoảng beacon"
+
+msgid "Time units; 100 is the compatibility default."
+msgstr "Đơn vị thời gian beacon; 100 là mặc định tương thích."
+
+msgid "DTIM period"
+msgstr "Chu kỳ DTIM"
+
+msgid "Lower values wake power-saving clients more often."
+msgstr "Giá trị thấp hơn đánh thức thiết bị tiết kiệm điện thường xuyên hơn."
+
+msgid "Enable 2.4 GHz radio"
+msgstr "Bật radio 2.4 GHz"
+
+msgid "Enable 5 GHz radio"
+msgstr "Bật radio 5 GHz"
+
+msgid "SSID"
+msgstr "SSID"
+
+msgid "Primary SSID"
+msgstr "SSID chính"
+
+msgid "Security mode"
+msgstr "Chế độ bảo mật"
+
+msgid "Primary security"
+msgstr "Bảo mật mạng chính"
+
+msgid "Open"
+msgstr "Mở"
+
+msgid "Open (no encryption)"
+msgstr "Mở (không mã hóa)"
+
+msgid "WPA2-PSK (CCMP)"
+msgstr "WPA2-PSK (CCMP)"
+
+msgid "WPA2-PSK / CCMP"
+msgstr "WPA2-PSK / CCMP"
+
+msgid "WPA3-SAE"
+msgstr "WPA3-SAE"
+
+msgid "WPA2/WPA3 transition"
+msgstr "Chuyển tiếp WPA2/WPA3"
+
+msgid "New passphrase"
+msgstr "Mật khẩu mới"
+
+msgid "New primary passphrase"
+msgstr "Mật khẩu mạng chính mới"
+
+msgid "Leave empty to keep the current secret."
+msgstr "Để trống để giữ mật khẩu hiện tại."
+
+msgid "Management frame protection"
+msgstr "Bảo vệ khung quản lý"
+
+msgid "Primary management frame protection"
+msgstr "Bảo vệ khung quản lý của mạng chính"
+
+msgid "Disabled"
+msgstr "Tắt"
+
+msgid "Optional"
+msgstr "Tùy chọn"
+
+msgid "Required"
+msgstr "Bắt buộc"
+
+msgid "MFP optional"
+msgstr "MFP tùy chọn"
+
+msgid "MFP required"
+msgstr "MFP bắt buộc"
+
+msgid "802.11r fast transition"
+msgstr "Chuyển tiếp nhanh 802.11r"
+
+msgid "Primary 802.11r fast transition"
+msgstr "Chuyển tiếp nhanh 802.11r của mạng chính"
+
+msgid "Disabled by default for IoT and camera compatibility."
+msgstr "Mặc định tắt để tương thích với thiết bị IoT và camera."
+
+msgid "Hide SSID"
+msgstr "Ẩn SSID"
+
+msgid "Hide primary SSID"
+msgstr "Ẩn SSID chính"
+
+msgid "Client isolation"
+msgstr "Cách ly thiết bị khách"
+
+msgid "Primary client isolation"
+msgstr "Cách ly thiết bị mạng chính"
+
+msgid "Maximum clients"
+msgstr "Số thiết bị tối đa"
+
+msgid "Primary maximum clients"
+msgstr "Số thiết bị tối đa của mạng chính"
+
+msgid "Channel"
+msgstr "Kênh"
+
+msgid "Automatic"
+msgstr "Tự động"
+
+msgid "Automatic (peer-aware 1/6/11)"
+msgstr "Tự động (phối hợp peer trên 1/6/11)"
+
+msgid "Automatic (peer-aware non-DFS blocks)"
+msgstr "Tự động (phối hợp peer trên các khối không DFS)"
+
+msgid "Transmit power (dBm)"
+msgstr "Công suất phát (dBm)"
+
+msgid "Wi-Fi 6 (802.11ax)"
+msgstr "Wi-Fi 6 (802.11ax)"
+
+msgid "HE BSS color"
+msgstr "Màu BSS HE"
+
+msgid "Driver selected"
+msgstr "Driver tự chọn"
+
+msgid "Enable compatibility BSS"
+msgstr "Bật BSS tương thích"
+
+msgid "A second 5 GHz BSS for clients that need WPA2."
+msgstr "Một BSS 5 GHz thứ hai cho thiết bị cần WPA2."
+
+msgid "Compatibility SSID"
+msgstr "SSID tương thích"
+
+msgid "Compatibility security"
+msgstr "Bảo mật mạng tương thích"
+
+msgid "New compatibility passphrase"
+msgstr "Mật khẩu mạng tương thích mới"
+
+msgid "Compatibility management frame protection"
+msgstr "Bảo vệ khung quản lý của mạng tương thích"
+
+msgid "Compatibility 802.11r fast transition"
+msgstr "Chuyển tiếp nhanh 802.11r của mạng tương thích"
+
+msgid "Hide compatibility SSID"
+msgstr "Ẩn SSID tương thích"
+
+msgid "Compatibility client isolation"
+msgstr "Cách ly thiết bị mạng tương thích"
+
+msgid "Compatibility maximum clients"
+msgstr "Số thiết bị tối đa của mạng tương thích"
+
+msgid "Channel width"
+msgstr "Độ rộng kênh"
+
+msgid "%d MHz"
+msgstr "%d MHz"
+
+msgid "802.11k neighbor reports"
+msgstr "Báo cáo AP lân cận 802.11k"
+
+msgid "802.11v BSS transition"
+msgstr "Chuyển BSS 802.11v"
+
+msgid "802.11r mobility domain"
+msgstr "Miền di động 802.11r"
+
+msgid "Exactly four hexadecimal digits, shared by both APs."
+msgstr "Đúng bốn chữ số thập lục phân, dùng chung cho cả hai AP."
+
+msgid "Enter exactly four hexadecimal digits."
+msgstr "Nhập đúng bốn chữ số thập lục phân."
+
+msgid "802.11r over the distribution system"
+msgstr "802.11r qua hệ thống phân phối"
+
+msgid "Disabled uses over-the-air FT, which has broader client interoperability."
+msgstr "Khi tắt sẽ dùng FT qua sóng, tương thích với nhiều thiết bị khách hơn."
+
+msgid "Active RSSI steering"
+msgstr "Điều hướng chủ động theo RSSI"
+
+msgid "Clients still make the final roaming decision; this controller sends standards-based 802.11v requests."
+msgstr "Thiết bị khách vẫn quyết định chuyển vùng; bộ điều khiển này gửi yêu cầu 802.11v theo chuẩn."
+
+msgid "Steer 2.4 GHz clients"
+msgstr "Điều hướng thiết bị 2.4 GHz"
+
+msgid "Keep disabled for conservative IoT/camera behavior."
+msgstr "Nên tắt để giữ tương thích ổn định với IoT/camera."
+
+msgid "Steer 5 GHz clients"
+msgstr "Điều hướng thiết bị 5 GHz"
+
+msgid "Sampling interval (seconds)"
+msgstr "Chu kỳ lấy mẫu (giây)"
+
+msgid "Soft steering threshold (dBm)"
+msgstr "Ngưỡng điều hướng mềm (dBm)"
+
+msgid "Consecutive weak samples"
+msgstr "Số mẫu yếu liên tiếp"
+
+msgid "Steering cooldown (seconds)"
+msgstr "Thời gian nghỉ điều hướng (giây)"
+
+msgid "Minimum association age (seconds)"
+msgstr "Thời gian kết nối tối thiểu (giây)"
+
+msgid "Hard fallback for persistently weak clients"
+msgstr "Ngắt cưỡng bức dự phòng cho thiết bị yếu kéo dài"
+
+msgid "Hard fallback threshold (dBm)"
+msgstr "Ngưỡng ngắt cưỡng bức (dBm)"
+
+msgid "Hard fallback delay (seconds)"
+msgstr "Độ trễ ngắt cưỡng bức (giây)"
+
+msgid "Hard fallback window (seconds)"
+msgstr "Cửa sổ ngắt cưỡng bức (giây)"
+
+msgid "Airtime fairness (TAF)"
+msgstr "Công bằng thời lượng sóng (TAF)"
+
+msgid "Broadcom transmit airtime scheduler."
+msgstr "Bộ lập lịch thời lượng phát của Broadcom."
+
+msgid "Frame bursting"
+msgstr "Phát khung liên tiếp"
+
+msgid "Reduce contention overhead; may reduce fairness with neighboring networks."
+msgstr "Giảm chi phí tranh chấp; có thể giảm tính công bằng với mạng lân cận."
+
+msgid "Explicit beamforming"
+msgstr "Beamforming tường minh"
+
+msgid "Use client feedback to steer transmitted energy."
+msgstr "Dùng phản hồi của thiết bị để định hướng năng lượng phát."
+
+msgid "Implicit beamforming"
+msgstr "Beamforming ngầm định"
+
+msgid "Estimate steering without explicit client feedback."
+msgstr "Ước lượng hướng phát không cần phản hồi tường minh từ thiết bị."
+
+msgid "Multi-user scheduling"
+msgstr "Lập lịch đa người dùng"
+
+msgid "Enable driver MU-MIMO/OFDMA scheduling support."
+msgstr "Bật hỗ trợ lập lịch MU-MIMO/OFDMA của driver."
+
+msgid "A-MPDU aggregation"
+msgstr "Gộp A-MPDU"
+
+msgid "Aggregate MPDUs for higher throughput."
+msgstr "Gộp các MPDU để tăng thông lượng."
+
+msgid "A-MSDU aggregation"
+msgstr "Gộp A-MSDU"
+
+msgid "Aggregate MSDUs for lower protocol overhead."
+msgstr "Gộp các MSDU để giảm chi phí giao thức."
+
+msgid "LDPC coding"
+msgstr "Mã hóa LDPC"
+
+msgid "Forward-error correction used by modern PHY modes."
+msgstr "Sửa lỗi xuôi được các chế độ PHY hiện đại sử dụng."
+
+msgid "Transmit STBC"
+msgstr "STBC phát"
+
+msgid "Space-time block coding for transmit diversity."
+msgstr "Mã khối không gian-thời gian để đa dạng hóa đường phát."
+
+msgid "Receive STBC"
+msgstr "STBC thu"
+
+msgid "Advertise receive space-time block coding."
+msgstr "Quảng bá khả năng thu mã khối không gian-thời gian."
+
+msgid "Guard interval policy"
+msgstr "Chính sách khoảng bảo vệ"
+
+msgid "Long / HE 1.6 µs"
+msgstr "Dài / HE 1,6 µs"
+
+msgid "Short / HE 0.8 µs"
+msgstr "Ngắn / HE 0,8 µs"
+
+msgid "Short, 1×LTF / HE 0.8 µs"
+msgstr "Ngắn, 1×LTF / HE 0,8 µs"
+
+msgid "Short, 2×LTF / HE 0.8 µs"
+msgstr "Ngắn, 2×LTF / HE 0,8 µs"
+
+msgid "Short, 2×LTF / HE 1.6 µs"
+msgstr "Ngắn, 2×LTF / HE 1,6 µs"
+
+msgid "Short, 4×LTF / HE 3.2 µs"
+msgstr "Ngắn, 4×LTF / HE 3,2 µs"
+
+msgid "MAC access policy"
+msgstr "Chính sách truy cập MAC"
+
+msgid "Deny listed clients"
+msgstr "Từ chối thiết bị trong danh sách"
+
+msgid "Allow only listed clients"
+msgstr "Chỉ cho phép thiết bị trong danh sách"
+
+msgid "MAC address list"
+msgstr "Danh sách địa chỉ MAC"
+
+msgid "Comma- or space-separated; applies to every enabled BSS."
+msgstr "Phân cách bằng dấu phẩy hoặc khoảng trắng; áp dụng cho mọi BSS đang bật."
+
+msgid "Enter comma- or space-separated MAC addresses."
+msgstr "Nhập các địa chỉ MAC phân cách bằng dấu phẩy hoặc khoảng trắng."
+
+msgid "Use 1–32 printable ASCII characters; apostrophes are not supported."
+msgstr "Dùng 1–32 ký tự ASCII in được; không hỗ trợ dấu nháy đơn."
+
+msgid "Use 8–63 printable ASCII characters without apostrophes or leading/trailing spaces."
+msgstr "Dùng 8–63 ký tự ASCII in được, không có dấu nháy đơn hay khoảng trắng ở đầu/cuối."
+
+msgid "Enter a passphrase because this WLAN does not have an existing secret."
+msgstr "Hãy nhập mật khẩu vì WLAN này chưa có mật khẩu hiện hữu."
+
+msgid "At least one radio must remain enabled."
+msgstr "Phải giữ ít nhất một radio được bật."
+
+msgid "Pair mode requires automatic channels; use local mode for a manual channel plan."
+msgstr "Chế độ cặp yêu cầu kênh tự động; hãy dùng chế độ cục bộ để đặt kế hoạch kênh thủ công."
+
+msgid "The selected channel is not valid at this 5 GHz width."
+msgstr "Kênh đã chọn không hợp lệ với độ rộng 5 GHz này."
+
+msgid "The hard threshold must be lower than the soft steering threshold."
+msgstr "Ngưỡng cưỡng bức phải thấp hơn ngưỡng điều hướng mềm."
+
+msgid "The hard fallback window must be longer than its delay."
+msgstr "Cửa sổ ngắt cưỡng bức phải dài hơn độ trễ của nó."
+
+msgid "Enter “auto” or a value from 1 to 31 dBm."
+msgstr "Nhập “auto” hoặc giá trị từ 1 đến 31 dBm."
+
+msgid "Enter “auto” or a BSS color from 1 to 63."
+msgstr "Nhập “auto” hoặc màu BSS từ 1 đến 63."
+
+msgid "READY"
+msgstr "SẴN SÀNG"
+
+msgid "DEGRADED"
+msgstr "SUY GIẢM"
+
+msgid "ONLINE"
+msgstr "TRỰC TUYẾN"
+
+msgid "OFFLINE"
+msgstr "NGOẠI TUYẾN"
+
+msgid "online"
+msgstr "trực tuyến"
+
+msgid "offline"
+msgstr "ngoại tuyến"
+
+msgid "on"
+msgstr "bật"
+
+msgid "off"
+msgstr "tắt"
+
+msgid "yes"
+msgstr "có"
+
+msgid "no"
+msgstr "không"
+
+msgid "running %s · accepted %s"
+msgstr "đang chạy %s · đã chấp nhận %s"
+
+msgid "trial %s"
+msgstr "thử nghiệm %s"
+
+msgid "pending %s"
+msgstr "đang chờ %s"
+
+msgid "%s · firmware %s · %s · wired roaming %s · peer %s %s · channels local %s/%s, peer %s/%s"
+msgstr "%s · firmware %s · %s · chuyển vùng có dây %s · peer %s %s · kênh cục bộ %s/%s, peer %s/%s"
+
+msgid "The wired peer is offline."
+msgstr "AP ngang hàng có dây đang ngoại tuyến."
+
+msgid "Immutable recovery is active. Wi-Fi settings are read-only and vendor radios are intentionally unavailable."
+msgstr "Đang chạy recovery bất biến. Cấu hình Wi-Fi chỉ được đọc và các radio của hãng được chủ động vô hiệu hóa."
+
+msgid "The two APs do not have the same mesh configuration."
+msgstr "Hai AP không có cùng cấu hình mesh."
+
+msgid "The AP channel plan overlaps or has not converged yet."
+msgstr "Kế hoạch kênh của hai AP đang chồng lấn hoặc chưa hội tụ."
+
+msgid "A configured radio or BSS is offline."
+msgstr "Một radio hoặc BSS đã cấu hình đang ngoại tuyến."
+
+msgid "A radio did not apply the configured transmit-power policy."
+msgstr "Một radio chưa áp dụng đúng chính sách công suất phát đã cấu hình."
+
+msgid "The browser timezone is unavailable or is not supported by this firmware."
+msgstr "Không đọc được múi giờ trình duyệt hoặc firmware này chưa hỗ trợ múi giờ đó."
+
+msgid "Timezone update failed"
+msgstr "Cập nhật múi giờ thất bại"
+
+msgid "Timezone synchronized to %s on both APs."
+msgstr "Đã đồng bộ múi giờ %s cho cả hai AP."
+
+msgid "Automatic timezone detection is disabled on both APs."
+msgstr "Đã tắt tự động nhận diện múi giờ trên cả hai AP."
+
+msgid "Unable to update timezone: %s"
+msgstr "Không thể cập nhật múi giờ: %s"
+
+msgid "Geographic timezone"
+msgstr "Múi giờ theo vị trí địa lý"
+
+msgid "%s configured · browser reports %s"
+msgstr "Đang cấu hình %s · trình duyệt báo %s"
+
+msgid "Synchronize now"
+msgstr "Đồng bộ ngay"
+
+msgid "Detection uses the browser IANA timezone once, validates it against the local database, then synchronizes both wired APs without contacting an external geolocation service."
+msgstr "Hệ thống lấy múi giờ IANA từ trình duyệt một lần, kiểm tra bằng cơ sở dữ liệu cục bộ rồi đồng bộ cả hai AP có dây mà không liên hệ dịch vụ định vị bên ngoài."
+
+msgid "Automatic timezone synchronization failed: %s"
+msgstr "Tự động đồng bộ múi giờ thất bại: %s"
+
+msgid "The selected 5 GHz channel requires DFS/radar handling."
+msgstr "Kênh 5 GHz đã chọn yêu cầu xử lý DFS/radar."
+
+msgid "The saved settings use the legacy schema and will be upgraded on the next apply."
+msgstr "Cấu hình đã lưu dùng schema cũ và sẽ được nâng cấp ở lần áp dụng kế tiếp."
+
+msgid "%s · %s GHz · %s"
+msgstr "%s · %s GHz · %s"
+
+msgid "Interface %s · BSSID %s · channel %s/%s MHz · TX %s dBm · noise %d dBm · color %d · %s · %d/%d clients"
+msgstr "Giao diện %s · BSSID %s · kênh %s/%s MHz · phát %s dBm · nhiễu %d dBm · màu %d · %s · %d/%d thiết bị"
+
+msgid "Client"
+msgstr "Thiết bị"
+
+msgid "IP address unknown"
+msgstr "Không rõ địa chỉ IP"
+
+msgid "Signal"
+msgstr "Tín hiệu"
+
+msgid "%d dBm (very weak)"
+msgstr "%d dBm (rất yếu)"
+
+msgid "%d dBm (weak)"
+msgstr "%d dBm (yếu)"
+
+msgid "%d dBm (fair)"
+msgstr "%d dBm (trung bình)"
+
+msgid "%d dBm (good)"
+msgstr "%d dBm (tốt)"
+
+msgid "Noise %d dBm · %d MHz"
+msgstr "Nhiễu %d dBm · %d MHz"
+
+msgid "PHY / security"
+msgstr "PHY / bảo mật"
+
+msgid "Traffic"
+msgstr "Lưu lượng"
+
+msgid "TX %s / RX %s"
+msgstr "Phát %s / thu %s"
+
+msgid "%s / %s · %d retries"
+msgstr "%s / %s · thử lại %d lần"
+
+msgid "Roaming"
+msgstr "Chuyển vùng"
+
+msgid "802.11k: %s · 802.11v: %s"
+msgstr "802.11k: %s · 802.11v: %s"
+
+msgid "Connected %s · idle %s"
+msgstr "Đã kết nối %s · rỗi %s"
+
+msgid "Actions"
+msgstr "Thao tác"
+
+msgid "Steer"
+msgstr "Điều hướng"
+
+msgid "Disconnect"
+msgstr "Ngắt kết nối"
+
+msgid "Disconnect this client from the current BSS?"
+msgstr "Ngắt thiết bị này khỏi BSS hiện tại?"
+
+msgid "No clients are associated."
+msgstr "Không có thiết bị nào đang kết nối."
+
+msgid "Recent roaming events"
+msgstr "Sự kiện chuyển vùng gần đây"
+
+msgid "No steering events have been recorded."
+msgstr "Chưa ghi nhận sự kiện điều hướng nào."
+
+msgid "A standards-based BSS transition request was sent."
+msgstr "Đã gửi yêu cầu chuyển BSS theo chuẩn."
+
+msgid "The client was disconnected."
+msgstr "Đã ngắt kết nối thiết bị."
+
+msgid "Wired peer neighbors are being refreshed."
+msgstr "Đang làm mới thông tin AP ngang hàng có dây."
+
+msgid "The radios restarted and clients will reconnect shortly."
+msgstr "Các radio đã khởi động lại và thiết bị sẽ sớm kết nối lại."
+
+msgid "The operation failed (exit code %s)."
+msgstr "Thao tác thất bại (mã thoát %s)."
+
+msgid "Channel scan"
+msgstr "Quét kênh"
+
+msgid "An explicit scan is never run automatically from this page."
+msgstr "Trang này không bao giờ tự chạy quét chủ động."
+
+msgid "Scan 2.4 GHz"
+msgstr "Quét 2.4 GHz"
+
+msgid "Scan 5 GHz"
+msgstr "Quét 5 GHz"
+
+msgid "Refresh peer neighbors"
+msgstr "Làm mới AP lân cận"
+
+msgid "Rescan channels & restart"
+msgstr "Quét lại kênh & khởi động lại"
+
+msgid "Run a scan to inspect neighboring BSSs. Scanning briefly consumes radio airtime."
+msgstr "Chạy quét để xem các BSS lân cận. Quá trình quét sẽ dùng thời lượng sóng trong thời gian ngắn."
+
+msgid "Wireless scan failed: %s"
+msgstr "Quét Wi-Fi thất bại: %s"
+
+msgid "Radio"
+msgstr "Radio"
+
+msgid "SSID / BSSID"
+msgstr "SSID / BSSID"
+
+msgid "Security"
+msgstr "Bảo mật"
+
+msgid "Capabilities"
+msgstr "Khả năng"
+
+msgid "<hidden>"
+msgstr "<ẩn>"
+
+msgid "%d dBm / SNR %d dB"
+msgstr "%d dBm / SNR %d dB"
+
+msgid "%s · k=%s · v=%s"
+msgstr "%s · k=%s · v=%s"
+
+msgid "Detected driver capabilities"
+msgstr "Khả năng driver đã phát hiện"
+
+msgid "Driver capability detection failed."
+msgstr "Không thể phát hiện khả năng của driver."
+
+msgid "%s · %s · 2×2 spatial streams · vendor nl80211 integration (not mac80211/netifd)"
+msgstr "%s · %s · 2×2 luồng không gian · tích hợp nl80211 của hãng (không phải mac80211/netifd)"
+
+msgid "Hardware"
+msgstr "Phần cứng"
+
+msgid "Widths"
+msgstr "Độ rộng"
+
+msgid "Channels"
+msgstr "Các kênh"
+
+msgid "Live acceleration"
+msgstr "Tăng tốc đang hoạt động"
+
+msgid "%s / core %s / PHY %s"
+msgstr "%s / lõi %s / PHY %s"
+
+msgid "HE %s · AMPDU %s · AMSDU %s · BF %s · MU %s · TAF %s"
+msgstr "HE %s · AMPDU %s · AMSDU %s · BF %s · MU %s · TAF %s"
+
+msgid "Raw driver feature flags"
+msgstr "Cờ tính năng thô của driver"
+
+msgid "Applying Wi-Fi configuration"
+msgstr "Đang áp dụng cấu hình Wi-Fi"
+
+msgid "Validating and applying the profile to both wired APs…"
+msgstr "Đang kiểm tra và áp dụng hồ sơ cho cả hai AP có dây…"
+
+msgid "Validating and applying the profile to this AP…"
+msgstr "Đang kiểm tra và áp dụng hồ sơ cho AP này…"
+
+msgid "Configuration was rejected (exit code %s). No unvalidated local profile was installed."
+msgstr "Cấu hình bị từ chối (mã thoát %s). Không cài đặt hồ sơ cục bộ chưa được kiểm tra."
+
+msgid "Wi-Fi configuration applied successfully. Clients may need a few seconds to reconnect."
+msgstr "Đã áp dụng cấu hình Wi-Fi. Thiết bị có thể cần vài giây để kết nối lại."
+
+msgid "Unable to read radio status: %s"
+msgstr "Không thể đọc trạng thái radio: %s"
+
+msgid "unknown error"
+msgstr "lỗi không xác định"
+
+msgid "%d s"
+msgstr "%d giây"
+
+msgid "%d min"
+msgstr "%d phút"
+
+msgid "%d h %d min"
+msgstr "%d giờ %d phút"
+
+msgid "%s B"
+msgstr "%s B"
+
+msgid "%s KiB"
+msgstr "%s KiB"
+
+msgid "%s MiB"
+msgstr "%s MiB"
+
+msgid "%s GiB"
+msgstr "%s GiB"
+
+msgid "%s kbit/s"
+msgstr "%s kbit/s"
+
+msgid "%s Mbit/s"
+msgstr "%s Mbit/s"
+
+msgid "%d Mbit/s %s duplex"
+msgstr "%d Mbit/s song công %s"
+
+msgid "%d RX / %d TX errors"
+msgstr "%d lỗi RX / %d lỗi TX"
+
+msgid "%d clients across all active BSSs"
+msgstr "%d thiết bị trên tất cả BSS đang hoạt động"
+
+msgid "%d errors · %d drops"
+msgstr "%d lỗi · %d gói bị loại"
+
+msgid "%s is not running."
+msgstr "%s đang không chạy."
+
+msgid "%s · %s · live operational view"
+msgstr "%s · %s · trạng thái vận hành trực tiếp"
+
+msgid "1 / 5 / 15 minutes"
+msgstr "1 / 5 / 15 phút"
+
+msgid "A/B boot safety"
+msgstr "An toàn khởi động A/B"
+
+msgid "Accepted fallback"
+msgstr "Bản dự phòng đã chấp nhận"
+
+msgid "All systems operational"
+msgstr "Mọi hệ thống hoạt động tốt"
+
+msgid "Associated wireless clients"
+msgstr "Thiết bị Wi-Fi đang kết nối"
+
+msgid "Attention recommended"
+msgstr "Nên kiểm tra"
+
+msgid "BSS"
+msgstr "BSS"
+
+msgid "Backup / flash firmware"
+msgstr "Sao lưu / nạp firmware"
+
+msgid "Boot retry counter"
+msgstr "Bộ đếm thử khởi động"
+
+msgid "Bridge traffic"
+msgstr "Lưu lượng bridge"
+
+msgid "Channel plan needs attention"
+msgstr "Kế hoạch kênh cần kiểm tra"
+
+msgid "Configuration differs"
+msgstr "Cấu hình không đồng nhất"
+
+msgid "Configuration synchronized"
+msgstr "Cấu hình đã đồng bộ"
+
+msgid "Connection age"
+msgstr "Thời gian kết nối"
+
+msgid "Control-plane services"
+msgstr "Dịch vụ điều khiển"
+
+msgid "Current rate"
+msgstr "Tốc độ hiện tại"
+
+msgid "DNS server"
+msgstr "Máy chủ DNS"
+
+msgid "Default gateway"
+msgstr "Gateway mặc định"
+
+msgid "Device & runtime"
+msgstr "Thiết bị & môi trường chạy"
+
+msgid "Device temperature is critical: %s °C."
+msgstr "Nhiệt độ thiết bị ở mức nguy hiểm: %s °C."
+
+msgid "Device temperature is elevated: %s °C."
+msgstr "Nhiệt độ thiết bị đang cao: %s °C."
+
+msgid "Ethernet backhaul with 802.11k/v and optional 802.11r"
+msgstr "Backhaul Ethernet với 802.11k/v và 802.11r tùy chọn"
+
+msgid "Ethernet switch ports"
+msgstr "Các cổng switch Ethernet"
+
+msgid "Every WAN/LAN socket is bridged; DHCP selects the management address"
+msgstr "Mọi cổng WAN/LAN đều được bridge; DHCP cấp địa chỉ quản lý"
+
+msgid "Firmware %s"
+msgstr "Firmware %s"
+
+msgid "Hardware identity and current process environment"
+msgstr "Nhận dạng phần cứng và môi trường tiến trình hiện tại"
+
+msgid "Inactive-slot updates retain a known-good fallback"
+msgstr "Cập nhật vào slot không hoạt động vẫn giữ lại bản dự phòng đã xác nhận"
+
+msgid "LED controller"
+msgstr "Bộ điều khiển LED"
+
+msgid "Last boot result"
+msgstr "Kết quả khởi động gần nhất"
+
+msgid "Last snapshot: %s"
+msgstr "Ảnh trạng thái gần nhất: %s"
+
+msgid "Linked"
+msgstr "Đã có link"
+
+msgid "Live capacity; the immutable system image is intentionally read-only"
+msgstr "Dung lượng trực tiếp; ảnh hệ thống bất biến được chủ động đặt chỉ đọc"
+
+msgid "Live data refreshes automatically; timezone changes apply to both APs."
+msgstr "Dữ liệu trực tiếp tự làm mới; thay đổi múi giờ áp dụng cho cả hai AP."
+
+msgid "Load average"
+msgstr "Tải trung bình"
+
+msgid "LuCI RPC"
+msgstr "LuCI RPC"
+
+msgid "Memory"
+msgstr "Bộ nhớ"
+
+msgid "Memory & persistent storage"
+msgstr "Bộ nhớ & lưu trữ bền vững"
+
+msgid "Model"
+msgstr "Model"
+
+msgid "NAND bad blocks"
+msgstr "Khối NAND lỗi"
+
+msgid "NAND reports %d bad erase blocks."
+msgstr "NAND báo có %d khối xóa lỗi."
+
+msgid "Neighbors not synchronized"
+msgstr "Neighbor chưa đồng bộ"
+
+msgid "Neighbors synchronized"
+msgstr "Neighbor đã đồng bộ"
+
+msgid "No default gateway is installed; Internet access may be unavailable."
+msgstr "Chưa có gateway mặc định; có thể không truy cập được Internet."
+
+msgid "No link"
+msgstr "Không có link"
+
+msgid "Open system log"
+msgstr "Mở nhật ký hệ thống"
+
+msgid "OpenWrt kernel %s"
+msgstr "Kernel OpenWrt %s"
+
+msgid "Panel labels are shown for orientation; all five ports are equivalent in AP mode"
+msgstr "Nhãn trên vỏ giúp nhận biết vị trí; cả năm cổng đều tương đương trong chế độ AP"
+
+msgid "RG-MA2820 operations dashboard"
+msgstr "Bảng điều khiển vận hành RG-MA2820"
+
+msgid "RX %s"
+msgstr "Thu %s"
+
+msgid "Recovery"
+msgstr "Recovery"
+
+msgid "Required management and roaming daemons"
+msgstr "Các daemon bắt buộc cho quản lý và chuyển vùng"
+
+msgid "Rescue address"
+msgstr "Địa chỉ cứu hộ"
+
+msgid "Roaming controller"
+msgstr "Bộ điều khiển chuyển vùng"
+
+msgid "Root volume"
+msgstr "Volume gốc"
+
+msgid "Running now"
+msgstr "Đang chạy"
+
+msgid "SSH management"
+msgstr "Quản lý SSH"
+
+msgid "Slot %s"
+msgstr "Slot %s"
+
+msgid "Standby"
+msgstr "Dự phòng"
+
+msgid "TX %s"
+msgstr "Phát %s"
+
+msgid "Temperature"
+msgstr "Nhiệt độ"
+
+msgid "Kernel thermal action at %s °C"
+msgstr "Kernel bắt đầu xử lý nhiệt ở %s °C"
+
+msgid "The AP is running immutable recovery instead of a normal A/B system slot."
+msgstr "AP đang chạy recovery bất biến thay vì slot hệ thống A/B thông thường."
+
+msgid "The management bridge does not have a DHCP address."
+msgstr "Bridge quản lý chưa có địa chỉ DHCP."
+
+msgid "Time synchronization"
+msgstr "Đồng bộ thời gian"
+
+msgid "Unable to read the system dashboard data."
+msgstr "Không thể đọc dữ liệu bảng điều khiển hệ thống."
+
+msgid "Unit %s"
+msgstr "Thiết bị %s"
+
+msgid "Uptime"
+msgstr "Thời gian hoạt động"
+
+msgid "Web interface"
+msgstr "Giao diện web"
+
+msgid "Wired mesh degraded"
+msgstr "Mesh có dây suy giảm"
+
+msgid "Wired mesh ready"
+msgstr "Mesh có dây sẵn sàng"
+
+msgid "Writable overlay"
+msgstr "Overlay có thể ghi"
+
+msgid "idle %s"
+msgstr "rỗi %s"
+
+msgid "running"
+msgstr "đang chạy"
+
+msgid "stopped"
+msgstr "đã dừng"
+
+msgid "%d clients"
+msgstr "%d thiết bị"
+
+msgid "%d d %d h"
+msgstr "%d ngày %d giờ"
+
+msgid "%d dBm"
+msgstr "%d dBm"
+
+msgid "%s / %s MHz"
+msgstr "%s / %s MHz"
+
+msgid "%s of %s · %d%%"
+msgstr "%s trên %s · %d%%"
+
+msgid "Action required"
+msgstr "Cần xử lý"
+
+msgid "Base MAC address"
+msgstr "Địa chỉ MAC gốc"
+
+msgid "Bridge MAC address"
+msgstr "Địa chỉ MAC của bridge"
+
+msgid "Channel plan healthy"
+msgstr "Kế hoạch kênh ổn định"
+
+msgid "DHCP address"
+msgstr "Địa chỉ DHCP"
+
+msgid "Firmware"
+msgstr "Firmware"
+
+msgid "Manage Wi-Fi & mesh"
+msgstr "Quản lý Wi-Fi & mesh"
+
+msgid "Management & uplink"
+msgstr "Quản lý & uplink"
+
+msgid "Mesh neighbor sync"
+msgstr "Đồng bộ neighbor mesh"
+
+msgid "No wireless clients are associated."
+msgstr "Không có thiết bị Wi-Fi nào đang kết nối."
+
+msgid "Offline"
+msgstr "Ngoại tuyến"
+
+msgid "Online"
+msgstr "Trực tuyến"
+
+msgid "Peer offline"
+msgstr "Peer ngoại tuyến"
+
+msgid "Peer online"
+msgstr "Peer trực tuyến"
+
+msgid "Pending slot"
+msgstr "Slot đang chờ"
+
+msgid "RX %s · TX %s"
+msgstr "Thu %s · phát %s"
+
+msgid "Roaming support"
+msgstr "Hỗ trợ chuyển vùng"
+
+msgid "Signal / PHY"
+msgstr "Tín hiệu / PHY"
+
+msgid "Steering offline"
+msgstr "Điều hướng ngoại tuyến"
+
+msgid "Steering online"
+msgstr "Điều hướng trực tuyến"
+
+msgid "TX %s dBm · noise %d dBm"
+msgstr "Phát %s dBm · nhiễu %d dBm"
+
+msgid "Trial slot"
+msgstr "Slot thử nghiệm"
+
+msgid "Unable to read wireless and mesh status."
+msgstr "Không thể đọc trạng thái Wi-Fi và mesh."
+
+msgid "Wi-Fi & wired roaming"
+msgstr "Wi-Fi & chuyển vùng có dây"
+
+msgid "cable disconnected"
+msgstr "chưa cắm cáp"
+
+msgid "Normal operation"
+msgstr "Bình thường"
+
+msgid "Ready"
+msgstr "Sẵn sàng"
+
+msgid "Checking"
+msgstr "Đang kiểm tra"
+
+msgid "Degraded"
+msgstr "Suy giảm"
+
+msgid "Waiting for DHCP"
+msgstr "Đang chờ DHCP"
+
+msgid "Trial boot"
+msgstr "Đang khởi động thử"
+
+msgid "Fault"
+msgstr "Có lỗi"
+
+msgid "Synchronizing"
+msgstr "Đang đồng bộ"
+
+msgid "Unknown"
+msgstr "Không rõ"
+
+msgid "The front-panel controller detected a core service, NAND, or thermal fault."
+msgstr "Bộ điều khiển đèn mặt trước phát hiện lỗi dịch vụ lõi, NAND hoặc nhiệt độ."
+
+msgid "The uplink gateway health check is failing."
+msgstr "Kiểm tra kết nối đến gateway uplink đang thất bại."
+
+msgid "No cable"
+msgstr "Chưa cắm cáp"
+
+msgid "Uplink health"
+msgstr "Trạng thái uplink"
+
+msgid "Any WAN/LAN socket can carry the uplink."
+msgstr "Có thể dùng bất kỳ cổng WAN/LAN nào làm uplink."
+
+msgid "Indicators & services"
+msgstr "Đèn trạng thái & dịch vụ"
+
+msgid "Live front-panel meanings and required daemons"
+msgstr "Ý nghĩa trực tiếp của đèn mặt trước và các daemon bắt buộc"
+
+msgid "Power"
+msgstr "Nguồn"
+
+msgid "WAN"
+msgstr "WAN"
+
+msgid "LAN"
+msgstr "LAN"
+
+msgid "Wi-Fi"
+msgstr "Wi-Fi"
+
+msgid "Mesh (WPS LED)"
+msgstr "Mesh (đèn WPS)"
+
+msgid "Steady is normal; blinking indicates trial, recovery, or fault."
+msgstr "Sáng liên tục là bình thường; nhấp nháy báo khởi động thử, recovery hoặc lỗi."
+
+msgid "WAN socket only: green means linked with a reachable gateway; activity flashes show WAN traffic; red means uplink failure; off means no cable."
+msgstr "Chỉ cổng WAN: xanh báo đã kết nối và truy cập được gateway; nháy báo lưu lượng WAN; đỏ báo lỗi uplink; tắt khi chưa cắm cáp."
+
+msgid "WAN socket only: steady green means linked; green flashes show received traffic and red flashes show transmitted traffic; red does not mean an error; off means no cable."
+msgstr "Chỉ cổng WAN: xanh liên tục báo đã kết nối; nháy xanh báo đang nhận, nháy đỏ báo đang gửi; đỏ không phải báo lỗi; tắt khi chưa cắm cáp."
+
+msgid "LAN sockets only: green means a LAN cable is linked; activity flashes show LAN traffic; off means no cable."
+msgstr "Chỉ các cổng LAN: xanh báo có cáp LAN đang kết nối; nháy báo lưu lượng LAN; tắt khi chưa cắm cáp."
+
+msgid "Steady green means every configured BSS is enabled; activity flashes show wireless traffic; slow blinking means partial service."
+msgstr "Xanh liên tục báo mọi BSS đã cấu hình đều hoạt động; nháy báo lưu lượng Wi-Fi; nháy chậm báo chỉ hoạt động một phần."
+
+msgid "Steady green means the peer is ready; brief blinks show successful peer probes; slow blinking means synchronizing; off means no peer."
+msgstr "Xanh liên tục báo AP bên kia sẵn sàng; nháy ngắn báo AP bên kia vừa phản hồi; nháy chậm báo đang đồng bộ; tắt là không có AP bên kia."

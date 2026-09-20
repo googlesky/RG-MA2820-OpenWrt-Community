@@ -1,0 +1,666 @@
+#!/bin/sh
+# Configure the Broadcom radios and, optionally, the wired peer as one ESS.
+
+set -eu
+
+env_file=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+device_file=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+init_dir=${RG_MA2820_INIT_DIR:-/etc/init.d}
+peer_tool=${RG_MA2820_PEER:-/usr/sbin/rg-ma2820-peer}
+jsonfilter=${RG_MA2820_JSONFILTER:-jsonfilter}
+
+usage()
+{
+	cat >&2 <<'EOF'
+usage:
+  rg-ma2820-set-wifi SSID [WPA2_PASSPHRASE|--open]
+  rg-ma2820-set-wifi --wired-mesh SSID_2G SSID_5G SSID_5G_LEGACY PASSPHRASE [ROOT_PASSWORD]
+  rg-ma2820-set-wifi --configure-owner SSID_2G SSID_5G SSID_5G_LEGACY PASSPHRASE_OR_--keep TXPOWER_2G TXPOWER_5G ROAM_RSSI HARD_RSSI HARD_FALLBACK
+  rg-ma2820-set-wifi --configure-json JSON_OBJECT
+  rg-ma2820-set-wifi --install-staged FILE
+
+The JSON interface is used by LuCI. It validates the complete candidate before
+changing either AP. A scope of "pair" updates the wired peer first and refuses
+manual pair-wide channels, since both APs must not be placed on one channel.
+EOF
+	exit 2
+}
+
+fail()
+{
+	echo "$*" >&2
+	return 1
+}
+
+valid_bool()
+{
+	case "$1" in 0|1) return 0 ;; *) return 1 ;; esac
+}
+
+valid_uint()
+{
+	local value="$1" minimum="$2" maximum="$3"
+	echo "$value" | grep -Eq '^[0-9]+$' &&
+		[ "$value" -ge "$minimum" ] && [ "$value" -le "$maximum" ]
+}
+
+valid_int()
+{
+	local value="$1" minimum="$2" maximum="$3"
+	echo "$value" | grep -Eq '^-?[0-9]+$' &&
+		[ "$value" -ge "$minimum" ] && [ "$value" -le "$maximum" ]
+}
+
+valid_printable()
+{
+	local value="$1" minimum="$2" maximum="$3" length
+	LC_ALL=C length=$(printf %s "$value" | wc -c)
+	[ "$length" -ge "$minimum" ] && [ "$length" -le "$maximum" ] || return 1
+	LC_ALL=C printf %s "$value" | grep -Eq '^[ -~]+$' || return 1
+	# Configuration is an owner-only shell environment. Reject the sole byte
+	# that cannot occur inside its deliberately simple single-quoted values.
+	case "$value" in *"'"*) return 1 ;; esac
+	return 0
+}
+
+valid_ssid()
+{
+	valid_printable "$1" 1 32
+}
+
+valid_wifi_password()
+{
+	valid_printable "$1" 8 63 &&
+		case "$1" in ' '*|*' ') false ;; *) true ;; esac
+}
+
+valid_txpower()
+{
+	[ "$1" = auto ] || valid_uint "$1" 1 31
+}
+
+valid_security()
+{
+	case "$1" in open|wpa2|wpa3|wpa2-wpa3) return 0 ;; *) return 1 ;; esac
+}
+
+valid_channel_2g()
+{
+	case "$1" in auto|1|2|3|4|5|6|7|8|9|10|11|12|13|14) return 0 ;; *) return 1 ;; esac
+}
+
+valid_channel_5g()
+{
+	case "$1" in
+		auto|36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165|169|173)
+			return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+valid_channel_width()
+{
+	local channel="$1" width="$2"
+	valid_channel_5g "$channel" || return 1
+	case "$width" in
+		20) return 0 ;;
+		40)
+			case "$channel" in auto|36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165|169) return 0 ;; esac
+			;;
+		80)
+			case "$channel" in auto|36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161) return 0 ;; esac
+			;;
+	esac
+	return 1
+}
+
+valid_country()
+{
+	case "$1" in '#a'|'#h'|'#r'|'#u') return 0 ;; esac
+	echo "$1" | grep -Eq '^[A-Z0-9]{2}$'
+}
+
+valid_acl()
+{
+	local mode="$1" list="$2" mac old_ifs
+	case "$mode" in disabled|allow|deny) ;; *) return 1 ;; esac
+	[ -z "$list" ] && return 0
+	old_ifs=$IFS
+	IFS=,
+	for mac in $list; do
+		echo "$mac" | grep -Eqi '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' || {
+			IFS=$old_ifs
+			return 1
+		}
+	done
+	IFS=$old_ifs
+}
+
+bool_value()
+{
+	case "$1" in true|1) printf '1\n' ;; false|0|'') printf '0\n' ;; *) return 1 ;; esac
+}
+
+json_value()
+{
+	$jsonfilter -s "$configuration_json" -e "@.$1" 2>/dev/null
+}
+
+load_current_defaults()
+{
+	if [ -r "$env_file" ]; then
+		# wifi.env is root-owned mode 0600 and written only by this program.
+		. "$env_file"
+	fi
+	WIFI_PROFILE=${WIFI_PROFILE:-factory}
+	RADIO_2G_ENABLED=${RADIO_2G_ENABLED:-1}
+	RADIO_5G_ENABLED=${RADIO_5G_ENABLED:-1}
+	SSID_2G=${SSID_2G:-${SSID_BASE:-RG-MA2820-Mesh}}
+	SSID_5G=${SSID_5G:-${SSID_BASE:-RG-MA2820-Mesh}}
+	SSID_5G_LEGACY=${SSID_5G_LEGACY:-${SSID_5G}-Legacy}
+	ENABLE_5G_LEGACY=${ENABLE_5G_LEGACY:-0}
+	if [ -z "${SECURITY_2G+x}" ]; then
+		[ "$WIFI_PROFILE" = wired-mesh ] && SECURITY_2G=wpa2 || SECURITY_2G=${WIFI_SECURITY:-wpa2}
+	fi
+	if [ -z "${SECURITY_5G+x}" ]; then
+		[ "$WIFI_PROFILE" = wired-mesh ] && SECURITY_5G=wpa3 || SECURITY_5G=${WIFI_SECURITY:-wpa2}
+	fi
+	SECURITY_5G_LEGACY=${SECURITY_5G_LEGACY:-wpa2}
+	WPA_PSK_2G=${WPA_PSK_2G:-${WPA_PSK:-}}
+	WPA_PSK_5G=${WPA_PSK_5G:-${WPA_PSK:-}}
+	WPA_PSK_5G_LEGACY=${WPA_PSK_5G_LEGACY:-${WPA_PSK:-}}
+	HIDDEN_2G=${HIDDEN_2G:-0}
+	HIDDEN_5G=${HIDDEN_5G:-0}
+	HIDDEN_5G_LEGACY=${HIDDEN_5G_LEGACY:-0}
+	ISOLATE_2G=${ISOLATE_2G:-0}
+	ISOLATE_5G=${ISOLATE_5G:-0}
+	ISOLATE_5G_LEGACY=${ISOLATE_5G_LEGACY:-0}
+	MAX_CLIENTS_2G=${MAX_CLIENTS_2G:-128}
+	MAX_CLIENTS_5G=${MAX_CLIENTS_5G:-128}
+	MAX_CLIENTS_5G_LEGACY=${MAX_CLIENTS_5G_LEGACY:-128}
+	MFP_2G=${MFP_2G:-0}
+	if [ -z "${MFP_5G+x}" ]; then
+		[ "$WIFI_PROFILE" = wired-mesh ] && MFP_5G=2 || MFP_5G=0
+	fi
+	MFP_5G_LEGACY=${MFP_5G_LEGACY:-0}
+	FT_2G=${FT_2G:-0}
+	if [ -z "${FT_5G+x}" ]; then
+		[ "$WIFI_PROFILE" = wired-mesh ] && FT_5G=${ENABLE_FT_SAE:-1} || FT_5G=0
+	fi
+	if [ -z "${FT_5G_LEGACY+x}" ]; then
+		[ "$WIFI_PROFILE" = wired-mesh ] && FT_5G_LEGACY=1 || FT_5G_LEGACY=0
+	fi
+	COUNTRY_CODE=${COUNTRY_CODE:-US}
+	CHANNEL_2G=${CHANNEL_2G:-auto}
+	CHANNEL_5G=${CHANNEL_5G:-auto}
+	WIDTH_5G=${WIDTH_5G:-80}
+	TXPOWER_2G_DBM=${TXPOWER_2G_DBM:-auto}
+	TXPOWER_5G_DBM=${TXPOWER_5G_DBM:-23}
+	BEACON_INTERVAL=${BEACON_INTERVAL:-100}
+	DTIM_PERIOD=${DTIM_PERIOD:-2}
+	ENABLE_11K=${ENABLE_11K:-1}
+	ENABLE_11V=${ENABLE_11V:-1}
+	MOBILITY_DOMAIN=${MOBILITY_DOMAIN:-4d41}
+	FT_OVER_DS=${FT_OVER_DS:-0}
+	HE_2G=${HE_2G:-1}
+	HE_5G=${HE_5G:-1}
+	BSS_COLOR_2G=${BSS_COLOR_2G:-auto}
+	BSS_COLOR_5G=${BSS_COLOR_5G:-auto}
+	AIRTIME_FAIRNESS=${AIRTIME_FAIRNESS:-1}
+	FRAMEBURST=${FRAMEBURST:-1}
+	BEAMFORMING=${BEAMFORMING:-1}
+	IMPLICIT_BEAMFORMING=${IMPLICIT_BEAMFORMING:-1}
+	MU_FEATURES=${MU_FEATURES:-1}
+	AMPDU=${AMPDU:-1}
+	AMSDU=${AMSDU:-1}
+	LDPC=${LDPC:-1}
+	STBC_TX=${STBC_TX:-0}
+	STBC_RX=${STBC_RX:-0}
+	SGI_TX=${SGI_TX:--1}
+	ACL_MODE=${ACL_MODE:-disabled}
+	ACL_MACS=${ACL_MACS:-}
+	ROAM_STEERING=${ROAM_STEERING:-1}
+	ROAM_BAND_2G=${ROAM_BAND_2G:-0}
+	ROAM_BAND_5G=${ROAM_BAND_5G:-1}
+	ROAM_INTERVAL=${ROAM_INTERVAL:-4}
+	ROAM_RSSI_TRIGGER=${ROAM_RSSI_TRIGGER:--72}
+	ROAM_RSSI_HARD=${ROAM_RSSI_HARD:--82}
+	ROAM_RSSI_SAMPLES=${ROAM_RSSI_SAMPLES:-3}
+	ROAM_COOLDOWN=${ROAM_COOLDOWN:-60}
+	ROAM_MIN_ASSOC_AGE=${ROAM_MIN_ASSOC_AGE:-15}
+	ROAM_HARD_FALLBACK=${ROAM_HARD_FALLBACK:-1}
+	ROAM_HARD_DELAY=${ROAM_HARD_DELAY:-12}
+	ROAM_HARD_WINDOW=${ROAM_HARD_WINDOW:-45}
+}
+
+set_device_fallbacks()
+{
+	case "$DEVICE_ID" in
+		ap2) FALLBACK_CHANNEL_2G=1; FALLBACK_CHANNEL_5G=36 ;;
+		ap3) FALLBACK_CHANNEL_2G=11; FALLBACK_CHANNEL_5G=149 ;;
+		*) fail "unknown device identity: $DEVICE_ID" ;;
+	esac
+}
+
+validate_configuration()
+{
+	local secured
+	# hostapd fixes MFP for SAE and transition mode. Normalize those values, and
+	# discard an inactive FT flag when a user changes a BSS to open security.
+	[ "$RADIO_5G_ENABLED" = 1 ] || ENABLE_5G_LEGACY=0
+	case "$SECURITY_2G" in open) MFP_2G=0; FT_2G=0 ;; wpa3) MFP_2G=2 ;; wpa2-wpa3) MFP_2G=1 ;; esac
+	case "$SECURITY_5G" in open) MFP_5G=0; FT_5G=0 ;; wpa3) MFP_5G=2 ;; wpa2-wpa3) MFP_5G=1 ;; esac
+	case "$SECURITY_5G_LEGACY" in open) MFP_5G_LEGACY=0; FT_5G_LEGACY=0 ;; wpa3) MFP_5G_LEGACY=2 ;; wpa2-wpa3) MFP_5G_LEGACY=1 ;; esac
+	valid_bool "$RADIO_2G_ENABLED" && valid_bool "$RADIO_5G_ENABLED" &&
+		{ [ "$RADIO_2G_ENABLED" = 1 ] || [ "$RADIO_5G_ENABLED" = 1 ]; } ||
+		fail 'at least one radio must remain enabled'
+	valid_ssid "$SSID_2G" && valid_ssid "$SSID_5G" &&
+		valid_ssid "$SSID_5G_LEGACY" || fail 'SSID must contain 1-32 printable ASCII bytes without apostrophes'
+	valid_bool "$ENABLE_5G_LEGACY" &&
+		{ [ "$ENABLE_5G_LEGACY" = 0 ] || [ "$RADIO_5G_ENABLED" = 1 ]; } ||
+		fail 'the compatibility BSS requires the 5 GHz radio'
+	valid_security "$SECURITY_2G" && valid_security "$SECURITY_5G" &&
+		valid_security "$SECURITY_5G_LEGACY" || fail 'invalid security mode'
+	if [ "$RADIO_2G_ENABLED" = 1 ] && [ "$SECURITY_2G" != open ]; then
+		valid_wifi_password "$WPA_PSK_2G" ||
+			fail 'secured WLAN passwords must contain 8-63 printable ASCII bytes without leading/trailing spaces or apostrophes'
+	fi
+	if [ "$RADIO_5G_ENABLED" = 1 ] && [ "$SECURITY_5G" != open ]; then
+		valid_wifi_password "$WPA_PSK_5G" ||
+			fail 'secured WLAN passwords must contain 8-63 printable ASCII bytes without leading/trailing spaces or apostrophes'
+	fi
+	if [ "$ENABLE_5G_LEGACY" = 1 ] && [ "$SECURITY_5G_LEGACY" != open ]; then
+		valid_wifi_password "$WPA_PSK_5G_LEGACY" ||
+			fail 'secured WLAN passwords must contain 8-63 printable ASCII bytes without leading/trailing spaces or apostrophes'
+	fi
+	for secured in "$HIDDEN_2G" "$HIDDEN_5G" "$HIDDEN_5G_LEGACY" \
+		"$ISOLATE_2G" "$ISOLATE_5G" "$ISOLATE_5G_LEGACY" \
+		"$FT_2G" "$FT_5G" "$FT_5G_LEGACY" "$ENABLE_11K" "$ENABLE_11V" \
+		"$FT_OVER_DS" "$HE_2G" "$HE_5G" "$AIRTIME_FAIRNESS" \
+		"$FRAMEBURST" "$BEAMFORMING" "$IMPLICIT_BEAMFORMING" "$MU_FEATURES" \
+		"$AMPDU" "$AMSDU" "$LDPC" "$STBC_TX" "$STBC_RX" \
+		"$ROAM_STEERING" "$ROAM_BAND_2G" "$ROAM_BAND_5G" "$ROAM_HARD_FALLBACK"; do
+		valid_bool "$secured" || fail 'invalid boolean option'
+	done
+	for secured in "$MFP_2G" "$MFP_5G" "$MFP_5G_LEGACY"; do
+		case "$secured" in 0|1|2) ;; *) fail 'invalid management-frame protection mode' ;; esac
+	done
+	for secured in "$MAX_CLIENTS_2G" "$MAX_CLIENTS_5G" "$MAX_CLIENTS_5G_LEGACY"; do
+		valid_uint "$secured" 1 128 || fail 'maximum clients must be between 1 and 128'
+	done
+	valid_country "$COUNTRY_CODE" || fail 'invalid country code'
+	valid_channel_2g "$CHANNEL_2G" || fail 'invalid 2.4 GHz channel'
+	valid_channel_width "$CHANNEL_5G" "$WIDTH_5G" || fail 'invalid 5 GHz channel/width combination'
+	valid_txpower "$TXPOWER_2G_DBM" && valid_txpower "$TXPOWER_5G_DBM" || fail 'invalid transmit power'
+	valid_uint "$BEACON_INTERVAL" 50 1000 && valid_uint "$DTIM_PERIOD" 1 255 || fail 'invalid beacon or DTIM interval'
+	echo "$MOBILITY_DOMAIN" | grep -Eqi '^[0-9a-f]{4}$' || fail 'mobility domain must contain four hexadecimal digits'
+	case "$BSS_COLOR_2G" in auto) ;; *) valid_uint "$BSS_COLOR_2G" 1 63 || fail 'invalid 2.4 GHz BSS color' ;; esac
+	case "$BSS_COLOR_5G" in auto) ;; *) valid_uint "$BSS_COLOR_5G" 1 63 || fail 'invalid 5 GHz BSS color' ;; esac
+	valid_int "$SGI_TX" -1 5 || fail 'invalid guard interval policy'
+	valid_acl "$ACL_MODE" "$ACL_MACS" || fail 'invalid MAC access-control list'
+	valid_uint "$ROAM_INTERVAL" 2 60 &&
+		valid_int "$ROAM_RSSI_TRIGGER" -90 -50 &&
+		valid_int "$ROAM_RSSI_HARD" -95 -51 &&
+		[ "$ROAM_RSSI_HARD" -lt "$ROAM_RSSI_TRIGGER" ] &&
+		valid_uint "$ROAM_RSSI_SAMPLES" 1 20 &&
+		valid_uint "$ROAM_COOLDOWN" 15 3600 &&
+		valid_uint "$ROAM_MIN_ASSOC_AGE" 0 3600 &&
+		valid_uint "$ROAM_HARD_DELAY" 5 300 &&
+		valid_uint "$ROAM_HARD_WINDOW" 6 600 &&
+		[ "$ROAM_HARD_WINDOW" -gt "$ROAM_HARD_DELAY" ] ||
+		fail 'invalid active-roaming thresholds or timers'
+	[ "$RADIO_2G_ENABLED" != 1 ] || [ "$SECURITY_2G:$FT_2G" != open:1 ] ||
+		fail '802.11r cannot be enabled on an open WLAN'
+	[ "$RADIO_5G_ENABLED" != 1 ] || [ "$SECURITY_5G:$FT_5G" != open:1 ] ||
+		fail '802.11r cannot be enabled on an open WLAN'
+	[ "$ENABLE_5G_LEGACY" != 1 ] || [ "$SECURITY_5G_LEGACY:$FT_5G_LEGACY" != open:1 ] ||
+		fail '802.11r cannot be enabled on an open WLAN'
+}
+
+write_configuration()
+{
+	local output="$1"
+	umask 077
+	{
+		echo "WIFI_CONFIG_VERSION='3'"
+		echo "WIFI_PROFILE='wired-mesh'"
+		echo "RADIO_2G_ENABLED='$RADIO_2G_ENABLED'"
+		echo "RADIO_5G_ENABLED='$RADIO_5G_ENABLED'"
+		echo "SSID_2G='$SSID_2G'"
+		echo "SSID_5G='$SSID_5G'"
+		echo "SSID_5G_LEGACY='$SSID_5G_LEGACY'"
+		echo "ENABLE_5G_LEGACY='$ENABLE_5G_LEGACY'"
+		echo "SECURITY_2G='$SECURITY_2G'"
+		echo "SECURITY_5G='$SECURITY_5G'"
+		echo "SECURITY_5G_LEGACY='$SECURITY_5G_LEGACY'"
+		echo "WPA_PSK_2G='$WPA_PSK_2G'"
+		echo "WPA_PSK_5G='$WPA_PSK_5G'"
+		echo "WPA_PSK_5G_LEGACY='$WPA_PSK_5G_LEGACY'"
+		# Compatibility for old recovery/health tooling. New radio code uses the
+		# per-BSS keys above.
+		echo "WPA_PSK='$WPA_PSK_5G'"
+		echo "HIDDEN_2G='$HIDDEN_2G'"
+		echo "HIDDEN_5G='$HIDDEN_5G'"
+		echo "HIDDEN_5G_LEGACY='$HIDDEN_5G_LEGACY'"
+		echo "ISOLATE_2G='$ISOLATE_2G'"
+		echo "ISOLATE_5G='$ISOLATE_5G'"
+		echo "ISOLATE_5G_LEGACY='$ISOLATE_5G_LEGACY'"
+		echo "MAX_CLIENTS_2G='$MAX_CLIENTS_2G'"
+		echo "MAX_CLIENTS_5G='$MAX_CLIENTS_5G'"
+		echo "MAX_CLIENTS_5G_LEGACY='$MAX_CLIENTS_5G_LEGACY'"
+		echo "MFP_2G='$MFP_2G'"
+		echo "MFP_5G='$MFP_5G'"
+		echo "MFP_5G_LEGACY='$MFP_5G_LEGACY'"
+		echo "FT_2G='$FT_2G'"
+		echo "FT_5G='$FT_5G'"
+		echo "FT_5G_LEGACY='$FT_5G_LEGACY'"
+		echo "COUNTRY_CODE='$COUNTRY_CODE'"
+		echo "CHANNEL_2G='$CHANNEL_2G'"
+		echo "CHANNEL_5G='$CHANNEL_5G'"
+		echo "FALLBACK_CHANNEL_2G='$FALLBACK_CHANNEL_2G'"
+		echo "FALLBACK_CHANNEL_5G='$FALLBACK_CHANNEL_5G'"
+		echo "WIDTH_5G='$WIDTH_5G'"
+		echo "TXPOWER_2G_DBM='$TXPOWER_2G_DBM'"
+		echo "TXPOWER_5G_DBM='$TXPOWER_5G_DBM'"
+		echo "BEACON_INTERVAL='$BEACON_INTERVAL'"
+		echo "DTIM_PERIOD='$DTIM_PERIOD'"
+		echo "ENABLE_11K='$ENABLE_11K'"
+		echo "ENABLE_11V='$ENABLE_11V'"
+		echo "MOBILITY_DOMAIN='$MOBILITY_DOMAIN'"
+		echo "FT_OVER_DS='$FT_OVER_DS'"
+		echo "HE_2G='$HE_2G'"
+		echo "HE_5G='$HE_5G'"
+		echo "BSS_COLOR_2G='$BSS_COLOR_2G'"
+		echo "BSS_COLOR_5G='$BSS_COLOR_5G'"
+		echo "AIRTIME_FAIRNESS='$AIRTIME_FAIRNESS'"
+		echo "FRAMEBURST='$FRAMEBURST'"
+		echo "BEAMFORMING='$BEAMFORMING'"
+		echo "IMPLICIT_BEAMFORMING='$IMPLICIT_BEAMFORMING'"
+		echo "MU_FEATURES='$MU_FEATURES'"
+		echo "AMPDU='$AMPDU'"
+		echo "AMSDU='$AMSDU'"
+		echo "LDPC='$LDPC'"
+		echo "STBC_TX='$STBC_TX'"
+		echo "STBC_RX='$STBC_RX'"
+		echo "SGI_TX='$SGI_TX'"
+		echo "ACL_MODE='$ACL_MODE'"
+		echo "ACL_MACS='$ACL_MACS'"
+		echo "ROAM_STEERING='$ROAM_STEERING'"
+		echo "ROAM_BAND_2G='$ROAM_BAND_2G'"
+		echo "ROAM_BAND_5G='$ROAM_BAND_5G'"
+		echo "ROAM_INTERVAL='$ROAM_INTERVAL'"
+		echo "ROAM_RSSI_TRIGGER='$ROAM_RSSI_TRIGGER'"
+		echo "ROAM_RSSI_HARD='$ROAM_RSSI_HARD'"
+		echo "ROAM_RSSI_SAMPLES='$ROAM_RSSI_SAMPLES'"
+		echo "ROAM_COOLDOWN='$ROAM_COOLDOWN'"
+		echo "ROAM_MIN_ASSOC_AGE='$ROAM_MIN_ASSOC_AGE'"
+		echo "ROAM_HARD_FALLBACK='$ROAM_HARD_FALLBACK'"
+		echo "ROAM_HARD_DELAY='$ROAM_HARD_DELAY'"
+		echo "ROAM_HARD_WINDOW='$ROAM_HARD_WINDOW'"
+	} > "$output"
+	chmod 0600 "$output"
+}
+
+configuration_from_json()
+{
+	local password scope
+	configuration_json=$1
+	load_current_defaults
+
+	SSID_2G=$(json_value ssid_2g)
+	SSID_5G=$(json_value ssid_5g)
+	SSID_5G_LEGACY=$(json_value ssid_5g_legacy)
+	RADIO_2G_ENABLED=$(bool_value "$(json_value radio_2g_enabled)")
+	RADIO_5G_ENABLED=$(bool_value "$(json_value radio_5g_enabled)")
+	ENABLE_5G_LEGACY=$(bool_value "$(json_value enable_5g_legacy)")
+	SECURITY_2G=$(json_value security_2g)
+	SECURITY_5G=$(json_value security_5g)
+	SECURITY_5G_LEGACY=$(json_value security_5g_legacy)
+	password=$(json_value password_2g); [ -z "$password" ] || WPA_PSK_2G=$password
+	password=$(json_value password_5g); [ -z "$password" ] || WPA_PSK_5G=$password
+	password=$(json_value password_5g_legacy); [ -z "$password" ] || WPA_PSK_5G_LEGACY=$password
+	HIDDEN_2G=$(bool_value "$(json_value hidden_2g)")
+	HIDDEN_5G=$(bool_value "$(json_value hidden_5g)")
+	HIDDEN_5G_LEGACY=$(bool_value "$(json_value hidden_5g_legacy)")
+	ISOLATE_2G=$(bool_value "$(json_value isolate_2g)")
+	ISOLATE_5G=$(bool_value "$(json_value isolate_5g)")
+	ISOLATE_5G_LEGACY=$(bool_value "$(json_value isolate_5g_legacy)")
+	MAX_CLIENTS_2G=$(json_value max_clients_2g)
+	MAX_CLIENTS_5G=$(json_value max_clients_5g)
+	MAX_CLIENTS_5G_LEGACY=$(json_value max_clients_5g_legacy)
+	MFP_2G=$(json_value mfp_2g)
+	MFP_5G=$(json_value mfp_5g)
+	MFP_5G_LEGACY=$(json_value mfp_5g_legacy)
+	FT_2G=$(bool_value "$(json_value ft_2g)")
+	FT_5G=$(bool_value "$(json_value ft_5g)")
+	FT_5G_LEGACY=$(bool_value "$(json_value ft_5g_legacy)")
+	COUNTRY_CODE=$(json_value country)
+	CHANNEL_2G=$(json_value channel_2g)
+	CHANNEL_5G=$(json_value channel_5g)
+	WIDTH_5G=$(json_value width_5g)
+	TXPOWER_2G_DBM=$(json_value txpower_2g)
+	TXPOWER_5G_DBM=$(json_value txpower_5g)
+	BEACON_INTERVAL=$(json_value beacon_interval)
+	DTIM_PERIOD=$(json_value dtim_period)
+	ENABLE_11K=$(bool_value "$(json_value ieee80211k)")
+	ENABLE_11V=$(bool_value "$(json_value ieee80211v)")
+	MOBILITY_DOMAIN=$(json_value mobility_domain)
+	FT_OVER_DS=$(bool_value "$(json_value ft_over_ds)")
+	HE_2G=$(bool_value "$(json_value he_2g)")
+	HE_5G=$(bool_value "$(json_value he_5g)")
+	BSS_COLOR_2G=$(json_value bss_color_2g)
+	BSS_COLOR_5G=$(json_value bss_color_5g)
+	AIRTIME_FAIRNESS=$(bool_value "$(json_value airtime_fairness)")
+	FRAMEBURST=$(bool_value "$(json_value frameburst)")
+	BEAMFORMING=$(bool_value "$(json_value beamforming)")
+	IMPLICIT_BEAMFORMING=$(bool_value "$(json_value implicit_beamforming)")
+	MU_FEATURES=$(bool_value "$(json_value mu_features)")
+	AMPDU=$(bool_value "$(json_value ampdu)")
+	AMSDU=$(bool_value "$(json_value amsdu)")
+	LDPC=$(bool_value "$(json_value ldpc)")
+	STBC_TX=$(bool_value "$(json_value stbc_tx)")
+	STBC_RX=$(bool_value "$(json_value stbc_rx)")
+	SGI_TX=$(json_value sgi_tx)
+	ACL_MODE=$(json_value acl_mode)
+	ACL_MACS=$(json_value acl_macs | tr 'A-F' 'a-f' |
+		sed 's/[[:space:],][[:space:],]*/,/g; s/^,//; s/,$//')
+	ROAM_STEERING=$(bool_value "$(json_value roam_steering)")
+	ROAM_BAND_2G=$(bool_value "$(json_value roam_band_2g)")
+	ROAM_BAND_5G=$(bool_value "$(json_value roam_band_5g)")
+	ROAM_INTERVAL=$(json_value roam_interval)
+	ROAM_RSSI_TRIGGER=$(json_value roam_rssi)
+	ROAM_RSSI_HARD=$(json_value hard_rssi)
+	ROAM_RSSI_SAMPLES=$(json_value roam_samples)
+	ROAM_COOLDOWN=$(json_value roam_cooldown)
+	ROAM_MIN_ASSOC_AGE=$(json_value roam_min_age)
+	ROAM_HARD_FALLBACK=$(bool_value "$(json_value hard_fallback)")
+	ROAM_HARD_DELAY=$(json_value hard_delay)
+	ROAM_HARD_WINDOW=$(json_value hard_window)
+	scope=$(json_value scope)
+	case "$scope" in local|pair) ;; *) fail 'scope must be local or pair' ;; esac
+	if [ "$scope" = pair ] &&
+		{ { [ "$RADIO_2G_ENABLED" = 1 ] && [ "$CHANNEL_2G" != auto ]; } ||
+		  { [ "$RADIO_5G_ENABLED" = 1 ] && [ "$CHANNEL_5G" != auto ]; }; }; then
+		fail 'pair-wide apply requires automatic channels; set manual channels on each AP separately'
+	fi
+	validate_configuration
+	CONFIGURE_SCOPE=$scope
+}
+
+safe_staged_file()
+{
+	local input="$1" key duplicates
+	[ -f "$input" ] || fail 'staged configuration is not a regular file'
+	[ "$(wc -c < "$input")" -le 16384 ] || fail 'staged configuration is too large'
+	if grep -Eqv "^[A-Z0-9_]+='[^']*'$" "$input"; then
+		fail 'staged configuration contains unsafe syntax'
+	fi
+	duplicates=$(sed "s/=.*//" "$input" | sort | uniq -d)
+	[ -z "$duplicates" ] || fail 'staged configuration contains duplicate keys'
+	while IFS='=' read -r key _; do
+		case "$key" in
+			WIFI_CONFIG_VERSION|WIFI_PROFILE|RADIO_2G_ENABLED|RADIO_5G_ENABLED|SSID_2G|SSID_5G|SSID_5G_LEGACY|ENABLE_5G_LEGACY|SECURITY_2G|SECURITY_5G|SECURITY_5G_LEGACY|WPA_PSK_2G|WPA_PSK_5G|WPA_PSK_5G_LEGACY|WPA_PSK|HIDDEN_2G|HIDDEN_5G|HIDDEN_5G_LEGACY|ISOLATE_2G|ISOLATE_5G|ISOLATE_5G_LEGACY|MAX_CLIENTS_2G|MAX_CLIENTS_5G|MAX_CLIENTS_5G_LEGACY|MFP_2G|MFP_5G|MFP_5G_LEGACY|FT_2G|FT_5G|FT_5G_LEGACY|COUNTRY_CODE|CHANNEL_2G|CHANNEL_5G|FALLBACK_CHANNEL_2G|FALLBACK_CHANNEL_5G|WIDTH_5G|TXPOWER_2G_DBM|TXPOWER_5G_DBM|BEACON_INTERVAL|DTIM_PERIOD|ENABLE_11K|ENABLE_11V|MOBILITY_DOMAIN|FT_OVER_DS|HE_2G|HE_5G|BSS_COLOR_2G|BSS_COLOR_5G|AIRTIME_FAIRNESS|FRAMEBURST|BEAMFORMING|IMPLICIT_BEAMFORMING|MU_FEATURES|AMPDU|AMSDU|LDPC|STBC_TX|STBC_RX|SGI_TX|ACL_MODE|ACL_MACS|ROAM_STEERING|ROAM_BAND_2G|ROAM_BAND_5G|ROAM_INTERVAL|ROAM_RSSI_TRIGGER|ROAM_RSSI_HARD|ROAM_RSSI_SAMPLES|ROAM_COOLDOWN|ROAM_MIN_ASSOC_AGE|ROAM_HARD_FALLBACK|ROAM_HARD_DELAY|ROAM_HARD_WINDOW) ;;
+			*) fail "unknown staged configuration key: $key" ;;
+		esac
+	done < "$input"
+}
+
+install_staged()
+{
+	local input="$1" temporary
+	safe_staged_file "$input"
+	# The syntax check above makes sourcing this root-only transfer safe.
+	. "$input"
+	[ "${WIFI_CONFIG_VERSION:-}" = 3 ] && [ "${WIFI_PROFILE:-}" = wired-mesh ] ||
+		fail 'staged configuration has the wrong schema or profile'
+	set_device_fallbacks
+	validate_configuration
+	temporary="${env_file}.new"
+	write_configuration "$temporary"
+	mv -f "$temporary" "$env_file"
+}
+
+write_factory_profile()
+{
+	local ssid="$1" passphrase="$2" security=wpa2 temporary
+	valid_ssid "$ssid" || usage
+	if [ "$passphrase" = --open ]; then
+		security=open
+		passphrase=
+	else
+		valid_wifi_password "$passphrase" || usage
+	fi
+	temporary="${env_file}.new"
+	umask 077
+	{
+		echo "WIFI_CONFIG_VERSION='3'"
+		echo "WIFI_PROFILE='factory'"
+		echo "SSID_BASE='$ssid'"
+		echo "WIFI_SECURITY='$security'"
+		echo "WPA_PSK='$passphrase'"
+		echo "COUNTRY_CODE='${FACTORY_COUNTRY_CODE:-US}'"
+		echo "ROAMING='1'"
+		echo "MOBILITY_DOMAIN='4d41'"
+		echo "CHANNEL_2G='$FALLBACK_CHANNEL_2G'"
+		echo "CHANNEL_5G='$FALLBACK_CHANNEL_5G'"
+		echo "WIDTH_5G='80'"
+		echo "TXPOWER_2G_DBM='auto'"
+		echo "TXPOWER_5G_DBM='auto'"
+	} > "$temporary"
+	chmod 0600 "$temporary"
+	mv -f "$temporary" "$env_file"
+}
+
+legacy_owner_configuration()
+{
+	local ssid_2g="$1" ssid_5g="$2" ssid_legacy="$3" passphrase="$4"
+	local txpower_2g="$5" txpower_5g="$6" roam_rssi="$7" hard_rssi="$8" hard_fallback="$9"
+	load_current_defaults
+	if [ "$passphrase" = --keep ]; then
+		passphrase=${WPA_PSK_5G:-${WPA_PSK:-}}
+	fi
+	SSID_2G=$ssid_2g
+	SSID_5G=$ssid_5g
+	SSID_5G_LEGACY=$ssid_legacy
+	WPA_PSK_2G=$passphrase
+	WPA_PSK_5G=$passphrase
+	WPA_PSK_5G_LEGACY=$passphrase
+	RADIO_2G_ENABLED=1
+	RADIO_5G_ENABLED=1
+	ENABLE_5G_LEGACY=1
+	SECURITY_2G=wpa2
+	SECURITY_5G=wpa3
+	SECURITY_5G_LEGACY=wpa2
+	CHANNEL_2G=auto
+	CHANNEL_5G=auto
+	WIDTH_5G=80
+	TXPOWER_2G_DBM=$txpower_2g
+	TXPOWER_5G_DBM=$txpower_5g
+	ROAM_RSSI_TRIGGER=$roam_rssi
+	ROAM_RSSI_HARD=$hard_rssi
+	ROAM_HARD_FALLBACK=$hard_fallback
+	validate_configuration
+	write_configuration "${env_file}.new"
+	mv -f "${env_file}.new" "$env_file"
+}
+
+restart_radios()
+{
+	[ "${RG_MA2820_NO_RESTART:-0}" = 1 ] && return 0
+	"$init_dir/rg-ma2820-roaming" stop >/dev/null 2>&1 || true
+	"$init_dir/rg-ma2820-wifi" restart || return $?
+	"$init_dir/rg-ma2820-neighbor-sync" restart >/dev/null 2>&1 || true
+	"$init_dir/rg-ma2820-roaming" restart >/dev/null 2>&1 || true
+}
+
+apply_staged()
+{
+	local input="$1" rollback="${env_file}.rollback.$$" had_previous=0
+	if [ -f "$env_file" ]; then
+		cp -p "$env_file" "$rollback" || return 1
+		had_previous=1
+	fi
+	if ! install_staged "$input"; then
+		rm -f "$rollback"
+		return 1
+	fi
+	if restart_radios; then
+		rm -f "$rollback"
+		return 0
+	fi
+	if [ "$had_previous" = 1 ]; then
+		mv -f "$rollback" "$env_file"
+	else
+		rm -f "$env_file" "$rollback"
+	fi
+	# A failed candidate must not leave the WLAN down. The Ethernet bridge and
+	# SSH remain independent, and this best-effort restart restores the last
+	# known configuration before reporting failure to LuCI.
+	restart_radios >/dev/null 2>&1 || true
+	fail 'radio restart failed; the previous Wi-Fi configuration was restored'
+}
+
+[ -r "$device_file" ] || fail "missing $device_file"
+. "$device_file"
+set_device_fallbacks
+
+case "${1:-}" in
+	--configure-json)
+		[ "$#" -eq 2 ] || usage
+		candidate=$(mktemp /tmp/rg-ma2820-wifi.XXXXXX)
+		trap 'rm -f "$candidate"' EXIT INT TERM
+		configuration_from_json "$2"
+		write_configuration "$candidate"
+		if [ "$CONFIGURE_SCOPE" = pair ]; then
+			[ -x "$peer_tool" ] || fail 'peer configuration helper is unavailable'
+			"$peer_tool" wifi-config "$candidate" || fail 'peer rejected the Wi-Fi configuration; local AP was not changed'
+		fi
+		apply_staged "$candidate"
+		;;
+	--install-staged)
+		[ "$#" -eq 2 ] || usage
+		apply_staged "$2"
+		;;
+	--wired-mesh)
+		[ "$#" -ge 5 ] && [ "$#" -le 6 ] || usage
+		legacy_owner_configuration "$2" "$3" "$4" "$5" auto 23 -72 -82 1
+		if [ -n "${6:-}" ]; then
+			echo "$6" | grep -Eq '^[A-Za-z0-9]{4,63}$' || usage
+			printf '%s\n%s\n' "$6" "$6" | passwd root >/dev/null
+		fi
+		restart_radios
+		;;
+	--configure-owner)
+		[ "$#" -eq 10 ] || usage
+		legacy_owner_configuration "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}"
+		restart_radios
+		;;
+	-*) usage ;;
+	*)
+		[ "$#" -ge 1 ] && [ "$#" -le 2 ] || usage
+		write_factory_profile "$1" "${2:---open}"
+		restart_radios
+		;;
+esac
+
+echo 'Wi-Fi settings updated. Factory reset still restores root:root and the open factory WLAN.'

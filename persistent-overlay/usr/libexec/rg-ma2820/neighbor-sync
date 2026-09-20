@@ -1,0 +1,165 @@
+#!/bin/sh
+# Keep 802.11k neighbor reports aligned with the peer's auto-selected channels.
+
+set -u
+
+WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+PEER=${RG_MA2820_PEER:-/usr/sbin/rg-ma2820-peer}
+HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
+WIFI_INIT=${RG_MA2820_WIFI_INIT:-/etc/init.d/rg-ma2820-wifi}
+STATE_FILE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
+PEER_STATE_FILE=${RG_MA2820_PEER_WIFI_STATE:-/var/run/rg-ma2820-peer-wifi.state}
+COLLISION_MARKER=${RG_MA2820_COLLISION_MARKER:-/tmp/rg-ma2820-channel-collision-restarted}
+INTERVAL=${RG_MA2820_NEIGHBOR_INTERVAL:-60}
+
+log()
+{
+	logger -t rg-ma2820-neighbor-sync "$*"
+}
+
+state_value()
+{
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+valid_mac()
+{
+	echo "$1" | grep -Eq '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'
+}
+
+valid_hex_ssid()
+{
+	echo "$1" | grep -Eq '^([0-9a-f]{2}){1,32}$'
+}
+
+install_neighbor()
+{
+	local interface="$1" bssid="$2" ssid="$3" info="$4"
+	local op_class="$5" channel="$6" phy="$7" mac_hex nr result
+	[ -S "/var/run/hostapd/$interface" ] || return 1
+	valid_mac "$bssid" || return 1
+	valid_hex_ssid "$ssid" || return 1
+	mac_hex="$(echo "$bssid" | tr -d ':')"
+	nr="$(printf '%s%s%02x%02x%02x' \
+		"$mac_hex" "$info" "$op_class" "$channel" "$phy")"
+	$HOSTAPD_CLI -p /var/run/hostapd -i "$interface" \
+		remove_neighbor "$bssid" >/dev/null 2>&1 || true
+	result="$($HOSTAPD_CLI -p /var/run/hostapd -i "$interface" \
+		set_neighbor "$bssid" "ssid=$ssid" "nr=$nr" 2>/dev/null)" || return 1
+	[ "$result" = OK ]
+}
+
+sync_once()
+{
+	local local_state peer_state profile local_2g local_5g
+	local peer_2g peer_5g peer_legacy channel_2g channel_5g center_5g neighbor_5g op_class_5g
+	local ssid_2g ssid_5g ssid_legacy signature local_center_5g op_class_2g
+	local radio_2g radio_5g legacy peer_radio_2g peer_radio_5g peer_legacy_enabled
+	[ -r "$WIFI_ENV" ] || return 1
+	. "$WIFI_ENV"
+	[ ! -r "$DEVICE_ENV" ] || . "$DEVICE_ENV"
+	[ "${WIFI_PROFILE:-factory}" = wired-mesh ] || return 0
+	[ -r "$STATE_FILE" ] || return 1
+	local_state="$(cat "$STATE_FILE" 2>/dev/null)" || return 1
+	# procd leaves stdin attached to the service.  Dropbear otherwise keeps its
+	# input channel open after the remote cat exits and timeout kills an otherwise
+	# successful sync (the misleading "Terminated" messages seen in logread).
+	peer_state="$(timeout 8 "$PEER" -- cat "$STATE_FILE" </dev/null 2>/dev/null)" || return 1
+	profile="$(state_value "$peer_state" PROFILE)"
+	[ "$profile" = wired-mesh ] || return 1
+	[ "$(state_value "$local_state" CONFIG_HASH)" = "$(state_value "$peer_state" CONFIG_HASH)" ] || return 1
+
+	peer_2g="$(state_value "$peer_state" BSSID_2G)"
+	peer_5g="$(state_value "$peer_state" BSSID_5G)"
+	peer_legacy="$(state_value "$peer_state" BSSID_5G_LEGACY)"
+	channel_2g="$(state_value "$peer_state" CHANNEL_2G)"
+	channel_5g="$(state_value "$peer_state" CHANNEL_5G)"
+	center_5g="$(state_value "$peer_state" CENTER_CHANNEL_5G)"
+	neighbor_5g="$(state_value "$peer_state" NEIGHBOR_CHANNEL_5G)"
+	op_class_5g="$(state_value "$peer_state" OP_CLASS_5G)"
+	ssid_2g="$(state_value "$local_state" SSID_HEX_2G)"
+	ssid_5g="$(state_value "$local_state" SSID_HEX_5G)"
+	ssid_legacy="$(state_value "$local_state" SSID_HEX_5G_LEGACY)"
+
+	radio_2g="$(state_value "$local_state" RADIO_2G_ENABLED)"
+	radio_5g="$(state_value "$local_state" RADIO_5G_ENABLED)"
+	legacy="$(state_value "$local_state" ENABLE_5G_LEGACY)"
+	peer_radio_2g="$(state_value "$peer_state" RADIO_2G_ENABLED)"
+	peer_radio_5g="$(state_value "$peer_state" RADIO_5G_ENABLED)"
+	peer_legacy_enabled="$(state_value "$peer_state" ENABLE_5G_LEGACY)"
+	[ "$radio_2g:$radio_5g:$legacy" = "$peer_radio_2g:$peer_radio_5g:$peer_legacy_enabled" ] || return 1
+	[ "$radio_2g" != 1 ] || valid_mac "$peer_2g" || return 1
+	[ "$radio_5g" != 1 ] || valid_mac "$peer_5g" || return 1
+	[ "$legacy" != 1 ] || valid_mac "$peer_legacy" || return 1
+	case "$channel_2g" in 1|2|3|4|5|6|7|8|9|10|11|12|13|14) ;; *) return 1 ;; esac
+	case "$channel_5g" in 36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165|169|173) ;; *) return 1 ;; esac
+	case "$neighbor_5g:$op_class_5g" in *[!0-9:]*|:|*:0) return 1 ;; esac
+	local_2g="$(state_value "$local_state" CHANNEL_2G)"
+	local_5g="$(state_value "$local_state" CHANNEL_5G)"
+	local_center_5g="$(state_value "$local_state" CENTER_CHANNEL_5G)"
+
+	# If startup raced netifd, both APs can initially select the same clean
+	# channel. Only AP2 moves, making convergence deterministic and preventing
+	# two peers from repeatedly restarting each other. The marker bounds a
+	# failed repair to one radio restart per boot; a successful move removes it
+	# on the next sync.
+	if [ "${DEVICE_ID:-}" = ap2 ] &&
+		{ { [ "$radio_2g" = 1 ] && [ "$local_2g" = "$channel_2g" ]; } ||
+		  { [ "$radio_5g" = 1 ] && [ "$local_center_5g" = "$center_5g" ]; }; }; then
+		[ ! -e "$COLLISION_MARKER" ] || return 1
+		: > "$COLLISION_MARKER" || return 1
+		# Do not let the status endpoint report READY from an old neighbor cache
+		# while hostapd is being replaced and has no freshly installed entries.
+		rm -f "$PEER_STATE_FILE" "$PEER_STATE_FILE.new"
+		log "channel collision with ${PEER_ID:-peer} ($local_2g,$local_5g); restarting local radios"
+		"$WIFI_INIT" restart >/dev/null 2>&1 || {
+			log 'automatic channel-collision repair failed'
+			return 1
+		}
+		return 1
+	fi
+	rm -f "$COLLISION_MARKER"
+
+	# BSSID information is little-endian.  The 2.4 GHz and SAE BSSs advertise
+	# reachability, security/key scope, RRM and HT/VHT.  The legacy 5 GHz BSS
+	# additionally advertises a common mobility domain for FT-PSK.
+	if [ "$radio_2g" = 1 ]; then
+		[ "$channel_2g" = 14 ] && op_class_2g=82 || op_class_2g=81
+		install_neighbor wl0 "$peer_2g" "$ssid_2g" 8f080000 "$op_class_2g" "$channel_2g" 7 || return 1
+	fi
+	if [ "$radio_5g" = 1 ]; then
+		install_neighbor wl1 "$peer_5g" "$ssid_5g" 8f180000 "$op_class_5g" "$neighbor_5g" 9 || return 1
+	fi
+	if [ "$legacy" = 1 ]; then
+		install_neighbor wl1.1 "$peer_legacy" "$ssid_legacy" 8f1c0000 "$op_class_5g" "$neighbor_5g" 9 || return 1
+	fi
+
+	# Publishing this file is the hand-off to the steering controller.  It is
+	# written only after all three neighbor entries were accepted by hostapd, so
+	# a stale or half-configured peer is never used as a roam target.
+	umask 077
+	printf '%s\n' "$peer_state" > "$PEER_STATE_FILE.new" || return 1
+	mv -f "$PEER_STATE_FILE.new" "$PEER_STATE_FILE" || return 1
+
+	signature="$peer_2g/$channel_2g/$peer_5g/$channel_5g"
+	if [ "${last_signature:-}" != "$signature" ]; then
+		log "installed wired-peer neighbors: $signature"
+		last_signature=$signature
+	fi
+}
+
+if [ "${RG_MA2820_NEIGHBOR_ONESHOT:-0}" = 1 ]; then
+	sync_once
+else
+	delay=5
+	rm -f "$PEER_STATE_FILE" "$PEER_STATE_FILE.new"
+	while true; do
+		if sync_once; then
+			delay=$INTERVAL
+		else
+			delay=10
+		fi
+		sleep "$delay"
+	done
+fi

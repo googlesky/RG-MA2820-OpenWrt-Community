@@ -1,0 +1,20 @@
+name: Source tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install -y gettext jq
+      - name: Validate translations
+        run: msgfmt --check --check-format -o /dev/null luci-app-rg-ma2820/po/vi/rg-ma2820.po
+      - name: Run source tests
+        run: ./tools/run-source-tests.sh

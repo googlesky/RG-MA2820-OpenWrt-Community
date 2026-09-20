@@ -1,0 +1,109 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=08
+STOP=89
+
+KERNEL_VERSION=4.1.52
+MODULE_ROOT=/lib/modules/$KERNEL_VERSION
+
+log()
+{
+	logger -t bcm6755-recovery "$*"
+	echo "bcm6755-recovery: $*" > /dev/console
+}
+
+load_module()
+{
+	local name="$1"
+	shift
+
+	[ -d "/sys/module/${name//-/_}" ] && return 0
+
+	if command -v modprobe >/dev/null 2>&1; then
+		modprobe "$name" "$@" >/dev/null 2>&1 && return 0
+	fi
+
+	local file
+	# BusyBox find in the recovery rootfs intentionally omits GNU -quit.
+	file="$(find "$MODULE_ROOT" -type f -name "$name.ko" -print | head -n 1)"
+	[ -n "$file" ] || {
+		log "module not present: $name"
+		return 1
+	}
+
+	insmod "$file" "$@" >/dev/null 2>&1 || {
+		log "module failed: $name"
+		return 1
+	}
+}
+
+next_wl_unit()
+{
+	local unit
+	for unit in 0 1 2; do
+		grep -q "^[[:space:]]*wl${unit}:" /proc/net/dev 2>/dev/null || {
+			echo "$unit"
+			return
+		}
+	done
+	echo 0
+}
+
+start()
+{
+	[ "$(uname -r)" = "$KERNEL_VERSION" ] || {
+		log "skip vendor modules on kernel $(uname -r)"
+		return 0
+	}
+
+	# Order follows the Broadcom 947622 dependency graph.  Failures are
+	# deliberately non-fatal so UART recovery remains available.
+	for module in \
+		bcm_license bcmlibs bcmvlan chipinfo bcm_ingqos pktflow cmdlist \
+		archer bcm_enet bcmmcast; do
+		load_module "$module"
+	done
+
+	# The immutable rescue system deliberately carries only the wired driver
+	# path.  Keeping the two large radio modules out leaves enough room for a
+	# complete A/B application root while still providing SSH on every port.
+	if [ -e /etc/rg-ma2820/recovery-root ]; then
+		log "wired recovery driver load pass complete"
+		return 0
+	fi
+
+	for module in \
+		wlcsm bcm_pcie_hcd pwrmngtd bcmpdc bcmspu cryptodev \
+		bcm_thermal otp; do
+		load_module "$module"
+	done
+
+	# The stock driver consumes a per-device kernel NVRAM text file before
+	# wl.ko is inserted.  Persistent packages copy the backed-up file here;
+	# RAM-only recovery images may omit it and retain the earlier behaviour.
+	if [ -s /etc/rg-ma2820/kernel_nvram.setting ] &&
+		[ -x /opt/bcm/sbin/nvram ]; then
+		/opt/bcm/sbin/nvram kernelset \
+			/etc/rg-ma2820/kernel_nvram.setting >/dev/null 2>&1 ||
+			log "could not import backed-up kernel NVRAM"
+	fi
+
+	load_module cfg80211
+	for module in hnd emf igs dpsta; do
+		load_module "$module"
+	done
+
+	local unit
+	unit="$(next_wl_unit)"
+	# RGOS on RG-MA2820(T) exposes both radios from wl.ko.  Some related
+	# BCM675x images also carry an optional DHD-managed second radio, so keep
+	# that load attempt non-fatal when dhd.ko is present.
+	load_module wl intf_name=wl%d instance_base="$unit"
+	if find "$MODULE_ROOT" -type f -name dhd.ko -print | grep -q .; then
+		unit="$(next_wl_unit)"
+		load_module dhd iface_name=wl dhd_console_ms=250 instance_base="$unit"
+	fi
+
+	log "vendor driver load pass complete"
+}

@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+
+/dts-v1/;
+
+#include "broadcom/bcm47622.dtsi"
+
+/ {
+	model = "Ruijie RG-MA2820(T)";
+	compatible = "ruijie,rg-ma2820t", "brcm,bcm947622",
+		     "brcm,bcm47622", "brcm,bcmbca";
+
+	aliases {
+		serial0 = &uart0;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs = "earlycon=pl011,0xff812000 console=ttyAMA0,115200n8";
+	};
+
+	memory@0 {
+		device_type = "memory";
+		reg = <0x0 0x10000000>;
+	};
+};
+
+&uart0 {
+	status = "okay";
+};
+
+&hsspi {
+	status = "okay";
+};
+
+&nand_controller {
+	brcm,wp-not-connected;
+	status = "okay";
+};
+
+&nandcs {
+	nand-on-flash-bbt;
+	brcm,nand-ecc-use-strap;
+};

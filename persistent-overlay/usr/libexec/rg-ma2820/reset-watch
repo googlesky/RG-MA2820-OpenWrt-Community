@@ -1,0 +1,32 @@
+#!/bin/sh
+# The retained RGOS kernel writes this marker after Reset is held for 5 s.
+
+set -u
+
+FLAG=${RG_MA2820_RESET_FLAG:-/data/.restoredefault_flag}
+RESET=${RG_MA2820_FACTORY_RESET:-/usr/sbin/rg-ma2820-factory-reset}
+CONSOLE=${RG_MA2820_CONSOLE:-/dev/console}
+TAG=rg-ma2820-reset-watch
+
+log()
+{
+	logger -t "$TAG" "$*"
+	echo "$TAG: $*" 2>/dev/null > "$CONSOLE" || true
+}
+
+mkdir -p "${FLAG%/*}"
+
+while true; do
+	if [ -f "$FLAG" ] && [ "$(dd if="$FLAG" bs=1 count=1 2>/dev/null)" = 1 ]; then
+		# Claim the event before erasing the overlay. If reset itself fails,
+		# procd will not repeatedly erase on the same stale marker.
+		rm -f "$FLAG"
+		sync
+		log 'physical Reset held for 5 seconds; restoring immutable defaults'
+		if "$RESET" --yes; then
+			exit 0
+		fi
+		log 'factory reset command failed'
+	fi
+	sleep 1
+done

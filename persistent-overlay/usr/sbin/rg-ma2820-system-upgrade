@@ -1,0 +1,143 @@
+#!/bin/sh
+# Power-loss-safe system update: write and verify only the inactive A/B volume.
+
+set -eu
+
+BOOTSTATE=/usr/libexec/rg-ma2820/bootstate
+MOUNTPOINT=/tmp/rg-ma2820-upgrade-root
+mounted=0
+block_created=0
+
+cleanup()
+{
+	[ "$mounted" = 0 ] || umount "$MOUNTPOINT" >/dev/null 2>&1 || true
+	[ "$block_created" = 0 ] ||
+		ubiblock --remove "/dev/ubi0_${volid:-invalid}" >/dev/null 2>&1 || true
+}
+
+trap cleanup EXIT INT TERM
+
+die()
+{
+	echo "rg-ma2820-system-upgrade: $*" >&2
+	exit 1
+}
+
+usage()
+{
+	echo "usage: $0 IMAGE [--slot a|b] [--no-reboot]" >&2
+	exit 2
+}
+
+[ "$#" -ge 1 ] || usage
+image=$1
+shift
+slot=
+reboot_after=1
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--slot)
+			[ "$#" -ge 2 ] || usage
+			slot=$2
+			shift 2
+			;;
+		--no-reboot)
+			reboot_after=0
+			shift
+			;;
+		*) usage ;;
+	esac
+done
+
+[ -f "$image" ] || die "not a regular file: $image"
+[ "$(id -u)" = 0 ] || die 'must run as root'
+. /etc/rg-ma2820/device.env
+
+recovery=0
+[ -e /etc/rg-ma2820/recovery-root ] && recovery=1
+state=$($BOOTSTATE status 2>/dev/null || true)
+active=$(printf '%s\n' "$state" | sed -n 's/^active=//p')
+booting=$(printf '%s\n' "$state" | sed -n 's/^booting=//p')
+
+if [ "$recovery" = 1 ]; then
+	current=
+	case "$active" in a|b) ;; *) active=b ;; esac
+else
+	case "$active" in a|b) ;; *) die 'cannot determine the accepted system slot' ;; esac
+	case "$booting" in
+		none) current=$active ;;
+		a|b) die "system slot $booting is still in its health trial" ;;
+		*) die 'cannot determine the running system slot' ;;
+	esac
+fi
+
+if [ -z "$slot" ]; then
+	case "$active" in
+		a) slot=b ;;
+		b) slot=a ;;
+	esac
+fi
+case "$slot" in a) volid=4 ;; b) volid=5 ;; *) usage ;; esac
+[ "$slot" != "$current" ] || die 'refusing to overwrite the running system slot'
+
+size=$(wc -c < "$image")
+[ "$size" -gt 0 ] || die 'image is empty'
+capacity=$(cat "/sys/class/ubi/ubi0_${volid}/data_bytes" 2>/dev/null ||
+	cat "/sys/class/ubi/ubi0_${volid}/reserved_ebs" 2>/dev/null)
+case "$capacity" in ''|*[!0-9]*) die 'cannot determine inactive-volume capacity' ;; esac
+# data_bytes is available on this kernel. If only reserved_ebs was exposed,
+# convert its LEB count to bytes.
+[ "$capacity" -gt 1000000 ] || capacity=$((capacity * 126976))
+[ "$size" -le "$capacity" ] || die "image is too large ($size > $capacity)"
+
+magic=$(hexdump -n 4 -v -e '4/1 "%02x"' "$image")
+[ "$magic" = 68737173 ] || die 'image is not a little-endian SquashFS'
+
+input_hash=$(sha256sum "$image" | cut -d' ' -f1)
+ubiblock --remove "/dev/ubi0_${volid}" >/dev/null 2>&1 || true
+umount "$MOUNTPOINT" >/dev/null 2>&1 || true
+echo "Writing system slot $slot; the active slot remains untouched."
+ubiupdatevol "/dev/ubi0_${volid}" "$image"
+sync
+
+readback_hash=$(dd if="/dev/ubi0_${volid}" bs=4096 2>/dev/null |
+	head -c "$size" | sha256sum | cut -d' ' -f1)
+[ "$readback_hash" = "$input_hash" ] || die 'readback hash mismatch'
+
+ubiblock --create "/dev/ubi0_${volid}" >/dev/null
+block_created=1
+mkdir -p "$MOUNTPOINT"
+mount -t squashfs -o ro "/dev/ubiblock0_${volid}" "$MOUNTPOINT" ||
+	die 'the vendor kernel cannot mount the staged image'
+mounted=1
+
+candidate_id=$(sed -n "s/^DEVICE_ID='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+candidate_format=$(sed -n "s/^SYSTEM_FORMAT='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+[ "$candidate_id" = "$DEVICE_ID" ] || die "image belongs to $candidate_id, not $DEVICE_ID"
+[ "$candidate_format" = "$SYSTEM_FORMAT" ] || die 'unsupported system-image format'
+[ -x "$MOUNTPOINT/sbin/init" ] || die 'staged image has no executable init'
+[ -d "$MOUNTPOINT/.bootstrap" ] || die 'staged image lacks the bootstrap pivot directory'
+
+# Force every regular-file block through the vendor SquashFS decoder before
+# changing boot state. This catches the exact incompatibility that bricked r2.
+tar -C "$MOUNTPOINT" -cf /dev/null . 2>/dev/null ||
+	die 'full staged-filesystem read failed'
+umount "$MOUNTPOINT"
+mounted=0
+ubiblock --remove "/dev/ubi0_${volid}" >/dev/null
+block_created=0
+
+if [ "$recovery" = 1 ]; then
+	$BOOTSTATE activate "$slot"
+else
+	$BOOTSTATE stage "$slot"
+fi
+sync
+echo "System slot $slot staged and verified: $input_hash"
+
+if [ "$reboot_after" = 1 ]; then
+	echo 'Rebooting into the one-shot trial. Failure returns to the accepted slot or LAN recovery.'
+	reboot
+fi

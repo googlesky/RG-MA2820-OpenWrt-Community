@@ -1,0 +1,28 @@
+__pycache__/
+*.py[cod]
+*.swp
+.DS_Store
+
+# Owner-supplied and generated material must remain private.
+/inputs/
+/private/
+/output*/
+/artifacts/
+/backups/
+/reference-firmware/
+/device-profiles/
+/config/pair.env
+*.bin
+*.ubi
+*.ubifs
+*.squashfs
+*.raw
+*.img
+*.w
+*.log
+
+# Local analysis and editor output.
+/.venv*/
+/evidence/
+/research-tools/
+/uc.out

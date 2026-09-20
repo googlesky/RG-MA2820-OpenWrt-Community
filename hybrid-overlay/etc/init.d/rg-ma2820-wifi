@@ -1,0 +1,751 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=60
+STOP=20
+
+WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+. "$WIFI_ENV"
+[ ! -r "$DEVICE_ENV" ] || . "$DEVICE_ENV"
+
+HOSTAPD=${RG_MA2820_HOSTAPD:-/opt/bcm/sbin/hostapd}
+HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+IP=${RG_MA2820_IP:-ip}
+CHANNEL_SELECT=${RG_MA2820_CHANNEL_SELECT:-/usr/libexec/rg-ma2820/channel-select}
+PEER=${RG_MA2820_PEER:-/usr/sbin/rg-ma2820-peer}
+STATE_FILE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
+NET_CLASS=${RG_MA2820_NET_CLASS:-/sys/class/net}
+PEER_NETWORK_WAIT=${RG_MA2820_PEER_NETWORK_WAIT:-30}
+PEER_NETWORK_POLL=${RG_MA2820_PEER_NETWORK_POLL:-1}
+PEER_RETRY_DELAY=${RG_MA2820_PEER_RETRY_DELAY:-5}
+PEER_ATTEMPTS_AP2=${RG_MA2820_PEER_ATTEMPTS_AP2:-3}
+PEER_ATTEMPTS_AP3=${RG_MA2820_PEER_ATTEMPTS_AP3:-6}
+
+# RAM recovery and pre-v14 persistent images do not define the new fields.
+WIFI_PROFILE="${WIFI_PROFILE:-factory}"
+ROAMING="${ROAMING:-0}"
+WIFI_SECURITY="${WIFI_SECURITY:-wpa2}"
+CHANNEL_2G="${CHANNEL_2G:-6}"
+CHANNEL_5G="${CHANNEL_5G:-36}"
+WIDTH_5G="${WIDTH_5G:-80}"
+CENTER_CHANNEL_5G="${CENTER_CHANNEL_5G:-42}"
+MOBILITY_DOMAIN="${MOBILITY_DOMAIN:-4d41}"
+COUNTRY_CODE="${COUNTRY_CODE:-US}"
+SSID_2G="${SSID_2G:-${SSID_BASE:-RG-MA2820-Mesh}}"
+SSID_5G="${SSID_5G:-${SSID_BASE:-RG-MA2820-Mesh}}"
+SSID_5G_LEGACY="${SSID_5G_LEGACY:-${SSID_5G}-Legacy}"
+ENABLE_5G_LEGACY="${ENABLE_5G_LEGACY:-0}"
+RADIO_2G_ENABLED="${RADIO_2G_ENABLED:-1}"
+RADIO_5G_ENABLED="${RADIO_5G_ENABLED:-1}"
+FALLBACK_CHANNEL_2G="${FALLBACK_CHANNEL_2G:-${CHANNEL_2G}}"
+FALLBACK_CHANNEL_5G="${FALLBACK_CHANNEL_5G:-${CHANNEL_5G}}"
+TXPOWER_2G_DBM="${TXPOWER_2G_DBM:-auto}"
+if [ -z "${TXPOWER_5G_DBM+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && TXPOWER_5G_DBM=23 || TXPOWER_5G_DBM=auto
+fi
+ENABLE_FT_SAE="${ENABLE_FT_SAE:-1}"
+if [ -z "${SECURITY_2G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && SECURITY_2G=wpa2 || SECURITY_2G="$WIFI_SECURITY"
+fi
+if [ -z "${SECURITY_5G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && SECURITY_5G=wpa3 || SECURITY_5G="$WIFI_SECURITY"
+fi
+SECURITY_5G_LEGACY="${SECURITY_5G_LEGACY:-wpa2}"
+WPA_PSK_2G="${WPA_PSK_2G:-${WPA_PSK:-}}"
+WPA_PSK_5G="${WPA_PSK_5G:-${WPA_PSK:-}}"
+WPA_PSK_5G_LEGACY="${WPA_PSK_5G_LEGACY:-${WPA_PSK:-}}"
+HIDDEN_2G="${HIDDEN_2G:-0}"
+HIDDEN_5G="${HIDDEN_5G:-0}"
+HIDDEN_5G_LEGACY="${HIDDEN_5G_LEGACY:-0}"
+ISOLATE_2G="${ISOLATE_2G:-0}"
+ISOLATE_5G="${ISOLATE_5G:-0}"
+ISOLATE_5G_LEGACY="${ISOLATE_5G_LEGACY:-0}"
+MAX_CLIENTS_2G="${MAX_CLIENTS_2G:-128}"
+MAX_CLIENTS_5G="${MAX_CLIENTS_5G:-128}"
+MAX_CLIENTS_5G_LEGACY="${MAX_CLIENTS_5G_LEGACY:-128}"
+MFP_2G="${MFP_2G:-0}"
+if [ -z "${MFP_5G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && MFP_5G=2 || MFP_5G=0
+fi
+MFP_5G_LEGACY="${MFP_5G_LEGACY:-0}"
+FT_2G="${FT_2G:-0}"
+if [ -z "${FT_5G+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && FT_5G="$ENABLE_FT_SAE" || FT_5G=0
+fi
+if [ -z "${FT_5G_LEGACY+x}" ]; then
+	[ "$WIFI_PROFILE" = wired-mesh ] && FT_5G_LEGACY=1 || FT_5G_LEGACY=0
+fi
+BEACON_INTERVAL="${BEACON_INTERVAL:-100}"
+DTIM_PERIOD="${DTIM_PERIOD:-2}"
+ENABLE_11K="${ENABLE_11K:-1}"
+ENABLE_11V="${ENABLE_11V:-1}"
+FT_OVER_DS="${FT_OVER_DS:-0}"
+HE_2G="${HE_2G:-1}"
+HE_5G="${HE_5G:-1}"
+BSS_COLOR_2G="${BSS_COLOR_2G:-auto}"
+BSS_COLOR_5G="${BSS_COLOR_5G:-auto}"
+AIRTIME_FAIRNESS="${AIRTIME_FAIRNESS:-1}"
+FRAMEBURST="${FRAMEBURST:-1}"
+BEAMFORMING="${BEAMFORMING:-1}"
+IMPLICIT_BEAMFORMING="${IMPLICIT_BEAMFORMING:-1}"
+MU_FEATURES="${MU_FEATURES:-1}"
+AMPDU="${AMPDU:-1}"
+AMSDU="${AMSDU:-1}"
+LDPC="${LDPC:-1}"
+STBC_TX="${STBC_TX:-0}"
+STBC_RX="${STBC_RX:-0}"
+SGI_TX="${SGI_TX:--1}"
+ACL_MODE="${ACL_MODE:-disabled}"
+ACL_MACS="${ACL_MACS:-}"
+
+log()
+{
+	logger -t rg-ma2820-wifi "$*"
+	echo "rg-ma2820-wifi: $*" > /dev/console
+}
+
+radio_band()
+{
+	local interface="$1"
+	local bands token has_a=0 has_g=0
+
+	bands="$($WL -i "$interface" band 2>/dev/null)"
+	[ -n "$bands" ] || bands="$($WL -i "$interface" bands 2>/dev/null)"
+	for token in $bands; do
+		case "$token" in
+			a|5g|5G|5ghz|5GHz) has_a=1 ;;
+			b|g|2g|2G|2.4g|2.4G|2ghz|2GHz) has_g=1 ;;
+		esac
+	done
+
+	[ "$has_a" -eq 1 ] && [ "$has_g" -eq 0 ] && {
+		echo a
+		return
+	}
+	[ "$has_g" -eq 1 ] && [ "$has_a" -eq 0 ] && {
+		echo g
+		return
+	}
+
+	[ "$interface" = wl0 ] && echo g || echo a
+}
+
+ssid_hex()
+{
+	printf %s "$1" | hexdump -v -e '1/1 "%02x"'
+}
+
+center_channel_5g()
+{
+	local channel="$1" width="$2"
+	case "$width:$channel" in
+		80:36|80:40|80:44|80:48) echo 42 ;;
+		80:52|80:56|80:60|80:64) echo 58 ;;
+		80:100|80:104|80:108|80:112) echo 106 ;;
+		80:116|80:120|80:124|80:128) echo 122 ;;
+		80:132|80:136|80:140|80:144) echo 138 ;;
+		80:149|80:153|80:157|80:161) echo 155 ;;
+		40:36|40:40) echo 38 ;;
+		40:44|40:48) echo 46 ;;
+		40:52|40:56) echo 54 ;;
+		40:60|40:64) echo 62 ;;
+		40:100|40:104) echo 102 ;;
+		40:108|40:112) echo 110 ;;
+		40:116|40:120) echo 118 ;;
+		40:124|40:128) echo 126 ;;
+		40:132|40:136) echo 134 ;;
+		40:140|40:144) echo 142 ;;
+		40:149|40:153) echo 151 ;;
+		40:157|40:161) echo 159 ;;
+		40:165|40:169) echo 167 ;;
+		*) echo "$channel" ;;
+	esac
+}
+
+neighbor_channel_5g()
+{
+	[ "$WIDTH_5G" = 80 ] && center_channel_5g "$1" "$WIDTH_5G" || echo "$1"
+}
+
+operating_class_5g()
+{
+	local channel="$1"
+	[ "$WIDTH_5G" != 80 ] || { echo 128; return; }
+	if [ "$WIDTH_5G" = 40 ]; then
+		case "$channel" in
+			36|44) echo 116 ;; 40|48) echo 117 ;;
+			52|60) echo 119 ;; 56|64) echo 120 ;;
+			100|108|116|124|132|140) echo 122 ;;
+			104|112|120|128|136|144) echo 123 ;;
+			149|157|165) echo 126 ;; 153|161|169) echo 127 ;;
+			*) echo 0 ;;
+		esac
+		return
+	fi
+	case "$channel" in
+		36|40|44|48) echo 115 ;; 52|56|60|64) echo 118 ;;
+		100|104|108|112|116|120|124|128|132|136|140|144) echo 121 ;;
+		149|153|157|161) echo 124 ;; 165|169) echo 125 ;;
+		*) echo 0 ;;
+	esac
+}
+
+state_value()
+{
+	printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
+}
+
+wait_for_peer_network()
+{
+	local elapsed=0
+	[ -n "${RESCUE_LINK_LOCAL:-}" ] || return 1
+	case "$PEER_NETWORK_WAIT" in ''|*[!0-9]*) return 1 ;; esac
+	case "$PEER_NETWORK_POLL" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$PEER_NETWORK_POLL" -ge 1 ] || return 1
+	while [ "$elapsed" -le "$PEER_NETWORK_WAIT" ]; do
+		$IP -4 addr show dev br-lan 2>/dev/null |
+			grep -Fq "inet $RESCUE_LINK_LOCAL/16" && return 0
+		[ "$elapsed" -eq "$PEER_NETWORK_WAIT" ] && break
+		sleep "$PEER_NETWORK_POLL"
+		elapsed=$((elapsed + PEER_NETWORK_POLL))
+	done
+	return 1
+}
+
+read_peer_channels()
+{
+	local output attempt max_attempts
+	PEER_SELECTED_CHANNEL_2G=
+	PEER_SELECTED_CHANNEL_5G=
+	[ "$WIFI_PROFILE" = wired-mesh ] || return 1
+	[ -x "$PEER" ] || return 1
+	wait_for_peer_network || {
+		log "peer network was not ready after ${PEER_NETWORK_WAIT}s"
+		return 1
+	}
+
+	# During a simultaneous power-up AP2 publishes first. AP3 waits for that
+	# state so both units cannot independently choose the same clean channel.
+	# AP2 still retries after its own bridge appears: START order is not proof
+	# that netifd has finished joining the physical switch ports.
+	case "${DEVICE_ID:-}" in
+		ap2) max_attempts=$PEER_ATTEMPTS_AP2 ;;
+		ap3) max_attempts=$PEER_ATTEMPTS_AP3 ;;
+		*) max_attempts=1 ;;
+	esac
+	case "$max_attempts" in ''|*[!0-9]*) return 1 ;; esac
+	case "$PEER_RETRY_DELAY" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$max_attempts" -ge 1 ] || return 1
+	attempt=1
+	while [ "$attempt" -le "$max_attempts" ]; do
+		# Dropbear keeps the session open while stdin is still attached to the
+		# boot service. Close it so a successful remote cat is not discarded
+		# when timeout eventually kills the otherwise idle SSH connection.
+		output="$(timeout 6 "$PEER" -- cat "$STATE_FILE" </dev/null 2>/dev/null)" || output=
+		if [ "$(state_value "$output" PROFILE)" = wired-mesh ]; then
+			PEER_SELECTED_CHANNEL_2G="$(state_value "$output" CHANNEL_2G)"
+			PEER_SELECTED_CHANNEL_5G="$(state_value "$output" CHANNEL_5G)"
+			case "$PEER_SELECTED_CHANNEL_2G" in 1|2|3|4|5|6|7|8|9|10|11|12|13|14) ;; *) PEER_SELECTED_CHANNEL_2G= ;; esac
+			case "$PEER_SELECTED_CHANNEL_5G" in 36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165|169|173) ;; *) PEER_SELECTED_CHANNEL_5G= ;; esac
+			[ -n "$PEER_SELECTED_CHANNEL_2G" ] &&
+				[ -n "$PEER_SELECTED_CHANNEL_5G" ] && return 0
+		fi
+		attempt=$((attempt + 1))
+		[ "$attempt" -gt "$max_attempts" ] || sleep "$PEER_RETRY_DELAY"
+	done
+	return 1
+}
+
+select_channels()
+{
+	local selected
+	SELECTED_CHANNEL_2G=$CHANNEL_2G
+	SELECTED_CHANNEL_5G=$CHANNEL_5G
+	PEER_SELECTED_CHANNEL_2G=
+	PEER_SELECTED_CHANNEL_5G=
+
+	read_peer_channels || true
+	if [ "$CHANNEL_2G" = auto ]; then
+		selected="$(RG_MA2820_COUNTRY="$COUNTRY_CODE" $CHANNEL_SELECT wl0 2g "$FALLBACK_CHANNEL_2G" \
+			"$PEER_SELECTED_CHANNEL_2G" 2>/dev/null)" || selected=
+		case "$selected" in 1|6|11) SELECTED_CHANNEL_2G=$selected ;; *) SELECTED_CHANNEL_2G=$FALLBACK_CHANNEL_2G ;; esac
+	fi
+	if [ "$CHANNEL_5G" = auto ]; then
+		selected="$(RG_MA2820_COUNTRY="$COUNTRY_CODE" $CHANNEL_SELECT wl1 5g "$FALLBACK_CHANNEL_5G" \
+			"$PEER_SELECTED_CHANNEL_5G" 2>/dev/null)" || selected=
+		case "$selected" in 36|149) SELECTED_CHANNEL_5G=$selected ;; *) SELECTED_CHANNEL_5G=$FALLBACK_CHANNEL_5G ;; esac
+	fi
+	case "$SELECTED_CHANNEL_2G" in 1|2|3|4|5|6|7|8|9|10|11|12|13|14) ;; *) SELECTED_CHANNEL_2G=6 ;; esac
+	case "$SELECTED_CHANNEL_5G" in 36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165|169|173) ;; *) SELECTED_CHANNEL_5G=36 ;; esac
+	SELECTED_CENTER_CHANNEL_5G="$(center_channel_5g "$SELECTED_CHANNEL_5G" "$WIDTH_5G")"
+	SELECTED_NEIGHBOR_CHANNEL_5G="$(neighbor_channel_5g "$SELECTED_CHANNEL_5G")"
+	SELECTED_OP_CLASS_5G="$(operating_class_5g "$SELECTED_CHANNEL_5G")"
+	log "selected 2.4 GHz channel $SELECTED_CHANNEL_2G and 5 GHz channel $SELECTED_CHANNEL_5G/$WIDTH_5G (peer ${PEER_SELECTED_CHANNEL_2G:-unknown},${PEER_SELECTED_CHANNEL_5G:-unknown})"
+}
+
+emit_common()
+{
+	local interface="$1" band="$2" channel="$3"
+	echo "interface=$interface"
+	echo 'driver=nl80211'
+	echo 'bridge=br-lan'
+	echo 'ctrl_interface=/var/run/hostapd'
+	echo "country_code=$COUNTRY_CODE"
+	echo 'ieee80211d=1'
+	[ "$band" != a ] || echo 'ieee80211h=1'
+	echo "hw_mode=$band"
+	echo "channel=$channel"
+	echo 'wmm_enabled=1'
+	echo 'auth_algs=1'
+	echo "beacon_int=$BEACON_INTERVAL"
+	echo "dtim_period=$DTIM_PERIOD"
+}
+
+emit_roaming()
+{
+	[ "$ENABLE_11K" = 1 ] && {
+		echo 'rrm_neighbor_report=1'
+		echo 'rrm_beacon_report=1'
+	}
+	[ "$ENABLE_11V" = 1 ] && echo 'bss_transition=1'
+}
+
+emit_bss_policy()
+{
+	local hidden="$1" isolate="$2" max_clients="$3"
+	echo "ignore_broadcast_ssid=$hidden"
+	echo "ap_isolate=$isolate"
+	echo "max_num_sta=$max_clients"
+}
+
+emit_security()
+{
+	local security="$1" passphrase="$2" mfp="$3" fast_transition="$4"
+	local ssid="$5" nas_identifier="$6" local_bssid="$7" peer_bssid="$8" peer_nas="$9"
+	local key_mgmt= rrb_key own_r1kh
+	if [ "$security" = open ]; then
+		echo 'wpa=0'
+		return 0
+	fi
+	echo 'wpa=2'
+	case "$security" in
+		wpa2)
+			key_mgmt=WPA-PSK
+			[ "$fast_transition" = 0 ] || key_mgmt="$key_mgmt FT-PSK"
+			echo "wpa_passphrase=$passphrase"
+			;;
+		wpa3)
+			key_mgmt=SAE
+			[ "$fast_transition" = 0 ] || key_mgmt="$key_mgmt FT-SAE"
+			echo "sae_password=$passphrase"
+			mfp=2
+			echo 'sae_require_mfp=1'
+			;;
+		wpa2-wpa3)
+			key_mgmt='WPA-PSK SAE'
+			[ "$fast_transition" = 0 ] || key_mgmt="$key_mgmt FT-PSK FT-SAE"
+			echo "wpa_passphrase=$passphrase"
+			echo "sae_password=$passphrase"
+			mfp=1
+			echo 'sae_require_mfp=1'
+			;;
+		*) return 1 ;;
+	esac
+	echo "wpa_key_mgmt=$key_mgmt"
+	echo 'wpa_pairwise=CCMP'
+	echo 'rsn_pairwise=CCMP'
+	echo "ieee80211w=$mfp"
+	[ "$fast_transition" = 1 ] || return 0
+	rrb_key="$(printf 'rg-ma2820-ft:%s:%s' "$ssid" "$passphrase" | sha256sum | cut -d ' ' -f 1)"
+	own_r1kh="$(echo "$local_bssid" | tr -d ':')"
+	echo "mobility_domain=$MOBILITY_DOMAIN"
+	echo "nas_identifier=$nas_identifier"
+	echo "r1_key_holder=$own_r1kh"
+	echo "ft_over_ds=$FT_OVER_DS"
+	echo 'ft_psk_generate_local=1'
+	echo 'reassociation_deadline=20000'
+	echo 'pmk_r1_push=1'
+	echo "r0kh=$peer_bssid $peer_nas $rrb_key"
+	echo "r1kh=$peer_bssid $peer_bssid $rrb_key"
+}
+
+emit_acl()
+{
+	case "$ACL_MODE" in
+		allow)
+			echo 'macaddr_acl=1'
+			echo 'accept_mac_file=/var/run/rg-ma2820-accept.mac'
+			;;
+		deny)
+			echo 'macaddr_acl=0'
+			echo 'deny_mac_file=/var/run/rg-ma2820-deny.mac'
+			;;
+	esac
+}
+
+write_factory_config()
+{
+	local interface="$1" band="$2" config="$3" ssid channel hostname
+	local local_bssid peer_bssid peer_nas
+	ssid="${SSID_BASE}-${interface}"
+	[ "$ROAMING" = 1 ] && ssid="$SSID_BASE"
+	[ "$band" = a ] && channel=$SELECTED_CHANNEL_5G || channel=$SELECTED_CHANNEL_2G
+	hostname="$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+	[ -n "$hostname" ] || hostname=rg-ma2820
+	if [ "$band" = a ]; then
+		local_bssid=${LOCAL_BSSID_5G:-00:00:00:00:00:00}
+		peer_bssid=${PEER_BSSID_5G:-00:00:00:00:00:00}
+		peer_nas=${PEER_HOSTNAME:-peer}-5g
+	else
+		local_bssid=${LOCAL_BSSID_2G:-00:00:00:00:00:00}
+		peer_bssid=${PEER_BSSID_2G:-00:00:00:00:00:00}
+		peer_nas=${PEER_HOSTNAME:-peer}-2g
+	fi
+
+	umask 077
+	{
+		emit_common "$interface" "$band" "$channel"
+		echo "ssid2=$(ssid_hex "$ssid")"
+		emit_bss_policy 0 0 128
+		emit_security "$WIFI_SECURITY" "${WPA_PSK:-}" 0 "$ROAMING" "$ssid" \
+			"${hostname}-${interface}" "$local_bssid" "$peer_bssid" "$peer_nas" || return 1
+		[ "$ROAMING" = 1 ] && emit_roaming
+	} > "$config"
+}
+
+write_wired_mesh_config()
+{
+	local interface="$1" band="$2" config="$3" hostname
+	hostname="${HOSTNAME:-$(cat /proc/sys/kernel/hostname 2>/dev/null)}"
+	umask 077
+	if [ "$band" = g ]; then
+		{
+			emit_common "$interface" "$band" "$SELECTED_CHANNEL_2G"
+			echo "ssid2=$(ssid_hex "$SSID_2G")"
+			emit_bss_policy "$HIDDEN_2G" "$ISOLATE_2G" "$MAX_CLIENTS_2G"
+			emit_security "$SECURITY_2G" "$WPA_PSK_2G" "$MFP_2G" "$FT_2G" \
+				"$SSID_2G" "${hostname}-2g" "${LOCAL_BSSID_2G:-00:00:00:00:00:00}" \
+				"${PEER_BSSID_2G:-00:00:00:00:00:00}" "${PEER_HOSTNAME:-peer}-2g"
+			emit_roaming
+			emit_acl
+		} > "$config"
+	else
+		{
+			emit_common "$interface" "$band" "$SELECTED_CHANNEL_5G"
+			echo "ssid2=$(ssid_hex "$SSID_5G")"
+			emit_bss_policy "$HIDDEN_5G" "$ISOLATE_5G" "$MAX_CLIENTS_5G"
+			emit_security "$SECURITY_5G" "$WPA_PSK_5G" "$MFP_5G" "$FT_5G" \
+				"$SSID_5G" "${hostname}-5g" "${LOCAL_BSSID_5G:-00:00:00:00:00:00}" \
+				"${PEER_BSSID_5G:-00:00:00:00:00:00}" "${PEER_HOSTNAME:-peer}-5g"
+			emit_roaming
+			emit_acl
+			if [ "$ENABLE_5G_LEGACY" = 1 ]; then
+				echo 'bss=wl1.1'
+				echo 'bridge=br-lan'
+				echo 'ctrl_interface=/var/run/hostapd'
+				echo "ssid2=$(ssid_hex "$SSID_5G_LEGACY")"
+				emit_bss_policy "$HIDDEN_5G_LEGACY" "$ISOLATE_5G_LEGACY" "$MAX_CLIENTS_5G_LEGACY"
+				emit_security "$SECURITY_5G_LEGACY" "$WPA_PSK_5G_LEGACY" \
+					"$MFP_5G_LEGACY" "$FT_5G_LEGACY" "$SSID_5G_LEGACY" \
+					"${hostname}-5g-legacy" "${LOCAL_BSSID_5G_LEGACY:-00:00:00:00:00:00}" \
+					"${PEER_BSSID_5G_LEGACY:-00:00:00:00:00:00}" \
+					"${PEER_HOSTNAME:-peer}-5g-legacy"
+				emit_roaming
+				emit_acl
+			fi
+		} > "$config"
+	fi
+}
+
+set_radio_txpower()
+{
+	local interface="$1" band="$2" value qdbm attempt readback
+	[ "$band" = a ] && value=$TXPOWER_5G_DBM || value=$TXPOWER_2G_DBM
+	if [ "$value" = auto ]; then
+		# This BCA 17.10 build documents `txpwr -1` as the default reset,
+		# but on a running BCM6755 radio it wraps to -64 qdBm (0 mW).
+		# qtxpower 127 with override left off is the driver's native
+		# unlimited/automatic sentinel and still obeys its channel table.
+		qdbm=127
+	else
+		echo "$value" | grep -Eq '^[0-9]+$' &&
+			[ "$value" -ge 1 ] && [ "$value" -le 31 ] || {
+			log "invalid $band-band TX power: $value dBm"
+			return 1
+		}
+		qdbm=$((value * 4))
+	fi
+	for attempt in 1 2 3 4 5; do
+		if $WL -i "$interface" txpwr1 -q "$qdbm" >/dev/null 2>&1; then
+			readback="$($WL -i "$interface" txpwr1 2>/dev/null)"
+			printf '%s\n' "$readback" |
+				grep -q "TxPower is $qdbm qdbm" && return 0
+		fi
+		[ "$attempt" -eq 5 ] || sleep 1
+	done
+	log "could not set $interface TX power to $value"
+	return 1
+}
+
+apply_driver_option()
+{
+	local interface="$1" description="$2"
+	shift 2
+	$WL -i "$interface" "$@" >/dev/null 2>&1 ||
+		log "driver rejected $description on $interface"
+}
+
+apply_advanced_radio_settings()
+{
+	local interface="$1" band="$2" he color
+	[ "$band" = a ] && { he=$HE_5G; color=$BSS_COLOR_5G; } ||
+		{ he=$HE_2G; color=$BSS_COLOR_2G; }
+	apply_driver_option "$interface" '802.11n mode' nmode 1
+	[ "$band" != a ] || apply_driver_option "$interface" '802.11ac mode' vhtmode 1
+	apply_driver_option "$interface" '802.11ax mode' he enab "$he"
+	apply_driver_option "$interface" 'A-MPDU aggregation' ampdu "$AMPDU"
+	apply_driver_option "$interface" 'A-MSDU aggregation' amsdu "$AMSDU"
+	apply_driver_option "$interface" 'LDPC coding' ldpc_cap "$LDPC"
+	apply_driver_option "$interface" 'TX STBC' stbc_tx "$STBC_TX"
+	apply_driver_option "$interface" 'RX STBC' stbc_rx "$STBC_RX"
+	apply_driver_option "$interface" 'guard interval policy' sgi_tx "$SGI_TX"
+	apply_driver_option "$interface" 'frame bursting' frameburst "$FRAMEBURST"
+	apply_driver_option "$interface" 'explicit beamforming' txbf "$BEAMFORMING"
+	apply_driver_option "$interface" 'implicit beamforming' txbf_imp "$IMPLICIT_BEAMFORMING"
+	apply_driver_option "$interface" 'multi-user scheduling' mu_features "$MU_FEATURES"
+	apply_driver_option "$interface" 'airtime fairness' taf enable "$AIRTIME_FAIRNESS"
+	[ "$color" = auto ] || apply_driver_option "$interface" 'HE BSS color' he bsscolor "$color"
+	if [ "$ENABLE_11K" = 1 ]; then
+		apply_driver_option "$interface" '802.11k RRM' rrm \
+			Link_Measurement Neighbor_Report Beacon_Passive Beacon_Active
+	else
+		apply_driver_option "$interface" '802.11k RRM' rrm 0
+	fi
+	if [ "$ENABLE_11V" = 1 ]; then
+		apply_driver_option "$interface" '802.11v WNM' wnm 1
+	else
+		apply_driver_option "$interface" '802.11v WNM' wnm 0
+	fi
+}
+
+set_5g_base_mac()
+{
+	local wanted actual
+	wanted="$(printf %s "${LOCAL_BSSID_5G:-}" | tr 'A-F' 'a-f')"
+	echo "$wanted" | grep -Eq '^([0-9a-f]{2}:){5}[0-9a-f]{2}$' || {
+		log 'missing safe, aligned 5 GHz BSSID allocation'
+		return 1
+	}
+	$WL -i wl1 down >/dev/null 2>&1 || true
+	$WL -i wl1 cur_etheraddr "$wanted" >/dev/null 2>&1 || {
+		log "driver rejected allocated 5 GHz BSSID $wanted"
+		return 1
+	}
+	# This vendor netdev returns EIO after applying the address. Verify the
+	# actual sysfs value rather than trusting that misleading return status.
+	ip link set dev wl1 address "$wanted" >/dev/null 2>&1 || true
+	actual="$(tr 'A-F' 'a-f' < "$NET_CLASS/wl1/address" 2>/dev/null)"
+	[ "$actual" = "$wanted" ] || {
+		log "5 GHz BSSID verification failed: wanted $wanted, got ${actual:-missing}"
+		return 1
+	}
+}
+
+prepare_radio()
+{
+	local interface="$1" band="$2" chanspec
+	[ "$band" = a ] && chanspec="${SELECTED_CHANNEL_5G}/${WIDTH_5G}" || chanspec="${SELECTED_CHANNEL_2G}/20"
+
+	$WL -i "$interface" down >/dev/null 2>&1
+	if [ "$WIFI_PROFILE" = wired-mesh ] && [ "$band" = a ]; then
+		set_5g_base_mac || return 1
+	fi
+	$WL -i "$interface" country "$COUNTRY_CODE" >/dev/null 2>&1 ||
+		log "could not set $COUNTRY_CODE regulatory profile on $interface"
+	apply_advanced_radio_settings "$interface" "$band"
+	$WL -i "$interface" chanspec "$chanspec" >/dev/null 2>&1 || {
+		log "could not set $interface chanspec $chanspec"
+		return 1
+	}
+	$WL -i "$interface" up >/dev/null 2>&1
+	# The cold-boot Broadcom driver rejects qtxpower until hostapd has brought
+	# the BSS up. Apply and verify the owner override only after hostapd starts.
+}
+
+enforce_post_hostapd_settings()
+{
+	local interface="$1" band="$2" chanspec attempt rrm_ok=0
+	[ "$band" = a ] || [ "$ROAMING" = 1 ] || [ "$WIFI_PROFILE" = wired-mesh ] || return 0
+
+	$WL -i "$interface" down >/dev/null 2>&1
+	if [ "$band" = a ]; then
+		chanspec="${SELECTED_CHANNEL_5G}/${WIDTH_5G}"
+		$WL -i "$interface" chanspec "$chanspec" >/dev/null 2>&1 ||
+			log "could not reassert $interface chanspec $chanspec"
+	fi
+	if [ "$ENABLE_11K" = 1 ]; then
+		for attempt in 1 2 3; do
+			$WL -i "$interface" down >/dev/null 2>&1
+			if $WL -i "$interface" rrm \
+				Link_Measurement Neighbor_Report \
+				Beacon_Passive Beacon_Active >/dev/null 2>&1; then
+				rrm_ok=1
+				break
+			fi
+			sleep 1
+		done
+		[ "$rrm_ok" = 1 ] || log "could not reassert 802.11k capabilities on $interface"
+	fi
+	$WL -i "$interface" up >/dev/null 2>&1
+	apply_driver_option "$interface" 'airtime fairness' taf enable "$AIRTIME_FAIRNESS"
+	set_radio_txpower "$interface" "$band" || true
+}
+
+verify_legacy_bss()
+{
+	local actual= expected attempt
+	[ "$WIFI_PROFILE" = wired-mesh ] && [ "$ENABLE_5G_LEGACY" = 1 ] || return 0
+	expected="$(printf %s "${LOCAL_BSSID_5G_LEGACY:-}" | tr 'A-F' 'a-f')"
+	# VIF creation is asynchronous on a cold radio. Do not reject a healthy
+	# BSS merely because sysfs trails hostapd by a fraction of a second.
+	for attempt in 1 2 3 4 5; do
+		if [ -e "$NET_CLASS/wl1.1/address" ]; then
+			actual="$(tr 'A-F' 'a-f' < "$NET_CLASS/wl1.1/address" 2>/dev/null)"
+			[ "$actual" = "$expected" ] && return 0
+		fi
+		[ "$attempt" -eq 5 ] || sleep 1
+	done
+	[ -e "$NET_CLASS/wl1.1/address" ] &&
+		log "unsafe 5 GHz legacy BSSID: expected $expected, got ${actual:-missing}" ||
+		log 'hostapd did not create the 5 GHz legacy BSS'
+	return 1
+}
+
+start_radio()
+{
+	local interface="$1" band config pid
+
+	[ -e "$NET_CLASS/$interface" ] || return 0
+	case "$interface" in
+		wl0) [ "$RADIO_2G_ENABLED" = 1 ] || { $WL -i "$interface" down >/dev/null 2>&1 || true; return 0; } ;;
+		wl1) [ "$RADIO_5G_ENABLED" = 1 ] || { $WL -i "$interface" down >/dev/null 2>&1 || true; return 0; } ;;
+	esac
+	band="$(radio_band "$interface")"
+	config="/var/run/hostapd-$interface.conf"
+	pid="/var/run/hostapd-$interface.pid"
+	prepare_radio "$interface" "$band" || return 1
+	if [ "$WIFI_PROFILE" = wired-mesh ]; then
+		write_wired_mesh_config "$interface" "$band" "$config" || return 1
+	else
+		write_factory_config "$interface" "$band" "$config" || return 1
+	fi
+
+	if ! $HOSTAPD -B -P "$pid" "$config" >/dev/null 2>&1; then
+		log "hostapd failed on $interface ($band band)"
+		return 1
+	fi
+	enforce_post_hostapd_settings "$interface" "$band"
+	if [ "$band" = a ] && ! verify_legacy_bss; then
+		[ ! -s "$pid" ] || kill "$(cat "$pid")" 2>/dev/null || true
+		return 1
+	fi
+	log "started $interface on channel $( [ "$band" = a ] && echo "$SELECTED_CHANNEL_5G/$WIDTH_5G" || echo "$SELECTED_CHANNEL_2G/20" )"
+}
+
+write_acl_files()
+{
+	local mac old_ifs target
+	rm -f /var/run/rg-ma2820-accept.mac /var/run/rg-ma2820-deny.mac
+	case "$ACL_MODE" in
+		allow) target=/var/run/rg-ma2820-accept.mac ;;
+		deny) target=/var/run/rg-ma2820-deny.mac ;;
+		*) return 0 ;;
+	esac
+	umask 077
+	: > "$target"
+	old_ifs=$IFS
+	IFS=,
+	for mac in $ACL_MACS; do
+		[ -z "$mac" ] || printf '%s\n' "$mac" >> "$target"
+	done
+	IFS=$old_ifs
+}
+
+write_state()
+{
+	local temporary bssid_2g bssid_5g bssid_5g_legacy config_hash
+	temporary="${STATE_FILE}.new"
+	bssid_2g="$(tr 'A-F' 'a-f' < "$NET_CLASS/wl0/address" 2>/dev/null)"
+	bssid_5g="$(tr 'A-F' 'a-f' < "$NET_CLASS/wl1/address" 2>/dev/null)"
+	bssid_5g_legacy=
+	[ ! -e "$NET_CLASS/wl1.1/address" ] ||
+		bssid_5g_legacy="$(tr 'A-F' 'a-f' < "$NET_CLASS/wl1.1/address" 2>/dev/null)"
+	config_hash="$(grep -Ev "^(FALLBACK_CHANNEL_2G|FALLBACK_CHANNEL_5G)=" "$WIFI_ENV" 2>/dev/null | sha256sum | cut -d ' ' -f 1)"
+	umask 077
+	{
+		echo 'FORMAT=1'
+		echo "DEVICE_ID=${DEVICE_ID:-unknown}"
+		echo "PROFILE=$WIFI_PROFILE"
+		echo "CHANNEL_2G=$SELECTED_CHANNEL_2G"
+		echo "CHANNEL_5G=$SELECTED_CHANNEL_5G"
+		echo "WIDTH_5G=$WIDTH_5G"
+		echo "CENTER_CHANNEL_5G=$SELECTED_CENTER_CHANNEL_5G"
+		echo "NEIGHBOR_CHANNEL_5G=$SELECTED_NEIGHBOR_CHANNEL_5G"
+		echo "OP_CLASS_5G=$SELECTED_OP_CLASS_5G"
+		echo "RADIO_2G_ENABLED=$RADIO_2G_ENABLED"
+		echo "RADIO_5G_ENABLED=$RADIO_5G_ENABLED"
+		echo "ENABLE_5G_LEGACY=$ENABLE_5G_LEGACY"
+		echo "CONFIG_HASH=$config_hash"
+		echo "BSSID_2G=$bssid_2g"
+		echo "BSSID_5G=$bssid_5g"
+		echo "BSSID_5G_LEGACY=$bssid_5g_legacy"
+		echo "SSID_HEX_2G=$(ssid_hex "$SSID_2G")"
+		echo "SSID_HEX_5G=$(ssid_hex "$SSID_5G")"
+		echo "SSID_HEX_5G_LEGACY=$(ssid_hex "$SSID_5G_LEGACY")"
+	} > "$temporary"
+	mv -f "$temporary" "$STATE_FILE"
+}
+
+start()
+{
+	local failed=0
+	[ "$(uname -r)" = 4.1.52 ] || return 0
+	[ -x "$HOSTAPD" ] || {
+		log 'vendor hostapd runtime missing'
+		return 1
+	}
+	[ "$CHANNEL_2G" != auto ] && [ "$CHANNEL_5G" != auto ] || [ -x "$CHANNEL_SELECT" ] || {
+		log 'channel selector missing'
+		return 1
+	}
+
+	mkdir -p /var/run/hostapd
+	rm -f "$STATE_FILE"
+	select_channels
+	write_acl_files
+	start_radio wl0 || failed=1
+	start_radio wl1 || failed=1
+	[ "$failed" = 0 ] && write_state
+	return "$failed"
+}
+
+stop()
+{
+	local interface pid attempt
+	for interface in wl0 wl1; do
+		pid="/var/run/hostapd-$interface.pid"
+		[ ! -s "$pid" ] || kill "$(cat "$pid")" 2>/dev/null || true
+	done
+	for attempt in 1 2 3 4 5; do
+		[ ! -e "$NET_CLASS/wl1.1" ] && break
+		sleep 1
+	done
+	for interface in wl0 wl1; do
+		rm -f "/var/run/hostapd-$interface.pid" "/var/run/hostapd-$interface.conf"
+		$WL -i "$interface" down >/dev/null 2>&1 || true
+	done
+	rm -f /var/run/rg-ma2820-accept.mac /var/run/rg-ma2820-deny.mac
+	rm -f "$STATE_FILE"
+}

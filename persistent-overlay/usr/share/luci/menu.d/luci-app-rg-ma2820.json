@@ -1,0 +1,13 @@
+{
+	"admin/network/rg-ma2820": {
+		"title": "RG-MA2820 Wi-Fi & Roaming",
+		"order": 16,
+		"action": {
+			"type": "view",
+			"path": "rg-ma2820/wireless"
+		},
+		"depends": {
+			"acl": [ "luci-app-rg-ma2820" ]
+		}
+	}
+}

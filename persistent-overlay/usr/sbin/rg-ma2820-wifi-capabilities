@@ -1,0 +1,130 @@
+#!/bin/sh
+# Read-only inventory of the proprietary Broadcom WLAN stack for LuCI.
+
+WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
+HOSTAPD=${RG_MA2820_HOSTAPD:-/opt/bcm/sbin/hostapd}
+. /usr/share/libubox/jshn.sh
+
+if [ ! -x "$WL" ] || [ ! -x "$HOSTAPD" ]; then
+	json_init
+	json_add_string error vendor_runtime_unavailable
+	json_dump
+	exit 0
+fi
+
+first_number()
+{
+	printf '%s\n' "$1" | sed -n 's/^[^0-9-]*\(-\{0,1\}[0-9][0-9]*\).*/\1/p' | head -n 1
+}
+
+command_value()
+{
+	local interface="$1"
+	shift
+	$WL -i "$interface" "$@" 2>/dev/null | head -n 1
+}
+
+add_boolean_command()
+{
+	local name="$1" interface="$2" value
+	shift 2
+	value="$(first_number "$(command_value "$interface" "$@")")"
+	[ "$value" = 1 ] && json_add_boolean "$name" 1 || json_add_boolean "$name" 0
+}
+
+add_radio()
+{
+	local interface="$1" band="$2" caps revinfo bw token seen tx_chain rx_chain
+	caps="$($WL -i "$interface" cap 2>/dev/null)"
+	revinfo="$($WL -i "$interface" revinfo 2>/dev/null)"
+	bw="$($WL -i "$interface" bw_cap "$band" 2>/dev/null | head -n 1)"
+
+	json_add_object ''
+	json_add_string interface "$interface"
+	[ "$band" = 2g ] && json_add_string band '2g' || json_add_string band '5g'
+	json_add_string device_id "$(printf '%s\n' "$revinfo" | sed -n 's/^deviceid //p')"
+	json_add_string chip "$(printf '%s\n' "$revinfo" | sed -n 's/^chipnum //p')"
+	json_add_string core_revision "$(printf '%s\n' "$revinfo" | sed -n 's/^corerev //p')"
+	json_add_string phy_revision "$(printf '%s\n' "$revinfo" | sed -n 's/^phyrev //p')"
+	json_add_string bandwidth_mask "${bw:-unknown}"
+	tx_chain="$(first_number "$(command_value "$interface" txchain)")"
+	rx_chain="$(first_number "$(command_value "$interface" rxchain)")"
+	json_add_int tx_chain_mask "${tx_chain:-0}"
+	json_add_int rx_chain_mask "${rx_chain:-0}"
+
+	json_add_array widths
+	json_add_int '' 20
+	case "$bw" in 0x3|0x7|0xf|0xff) json_add_int '' 40 ;; esac
+	case "$bw" in 0x7|0xf|0xff) json_add_int '' 80 ;; esac
+	case "$bw" in 0xf|0xff) json_add_int '' 160 ;; esac
+	json_close_array
+
+	json_add_array channels
+	seen=' '
+	for token in $($WL -i "$interface" chanspecs 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)\([ul]\|\/[0-9][0-9]*\)\{0,1\} .*/\1/p'); do
+		case "$seen" in *" $token "*) continue ;; esac
+		seen="$seen$token "
+		json_add_int '' "$token"
+	done
+	json_close_array
+
+	json_add_array features
+	for token in $caps; do json_add_string '' "$token"; done
+	json_close_array
+
+	json_add_object runtime
+	add_boolean_command wifi6 "$interface" he enab
+	add_boolean_command ampdu "$interface" ampdu
+	add_boolean_command amsdu "$interface" amsdu
+	add_boolean_command beamforming "$interface" txbf
+	add_boolean_command implicit_beamforming "$interface" txbf_imp
+	add_boolean_command ldpc "$interface" ldpc_cap
+	add_boolean_command stbc_tx "$interface" stbc_tx
+	add_boolean_command stbc_rx "$interface" stbc_rx
+	add_boolean_command frameburst "$interface" frameburst
+	add_boolean_command mu_features "$interface" mu_features
+	add_boolean_command airtime_fairness "$interface" taf enable
+	json_add_string guard_interval "$(command_value "$interface" sgi_tx)"
+	json_add_string interference_mitigation "$(first_number "$(command_value "$interface" interference)")"
+	json_add_string channel_monitor "$(command_value "$interface" chanim_mode)"
+	json_close_object
+	json_close_object
+}
+
+driver_version="$($WL ver 2>/dev/null | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g; s/ $//')"
+hostapd_version="$($HOSTAPD -v 2>&1 | head -n 1)"
+
+json_init
+json_add_string driver "$driver_version"
+json_add_string hostapd "$hostapd_version"
+json_add_string integration vendor-nl80211
+json_add_boolean mac80211 0
+json_add_boolean wired_backhaul 1
+json_add_int spatial_streams 2
+
+json_add_array security_modes
+json_add_string '' open
+json_add_string '' wpa2
+json_add_string '' wpa3
+json_add_string '' wpa2-wpa3
+json_close_array
+
+json_add_array countries
+countries="$($WL -i wl1 country list 2>/dev/null |
+	awk 'NR > 1 && ($1 ~ /^[A-Z0-9][A-Z0-9]$/ || $1 ~ /^#[ahru]$/) { code=$1; $1=""; sub(/^[ \t]+/, ""); print code "|" $0 }')"
+while IFS='|' read -r code name; do
+	[ -n "$code" ] || continue
+	json_add_object ''
+	json_add_string code "$code"
+	json_add_string name "$name"
+	json_close_object
+done <<EOF
+$countries
+EOF
+json_close_array
+
+json_add_array radios
+add_radio wl0 2g
+add_radio wl1 5g
+json_close_array
+json_dump

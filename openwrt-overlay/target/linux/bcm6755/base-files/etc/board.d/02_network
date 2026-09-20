@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+. /lib/functions/system.sh
+. /lib/functions/uci-defaults.sh
+
+board_config_update
+
+case "$(board_name)" in
+	ruijie,rg-ma2820t)
+		# The recovery image itself has no upstream BCM6755 Ethernet
+		# driver.  A matching vendor-kernel RAM boot exposes its CPU port
+		# as eth0, so keep the userspace network definition conservative.
+		ucidef_set_interface_lan "eth0"
+		;;
+esac
+
+board_config_flush
+
+exit 0
