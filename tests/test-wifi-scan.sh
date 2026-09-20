@@ -38,7 +38,7 @@ chmod 0755 "$mock_wl"
 result=$(PATH="$openwrt_host/bin:$PATH" \
 	RG_MA2820_JSHN="$openwrt_host/share/libubox/jshn.sh" \
 	RG_MA2820_WL=$mock_wl RG_MA2820_SCAN_WAIT=0 \
-	sh "$project_dir/persistent-overlay/usr/sbin/rg-ma2820-wifi-scan" wl1)
+	bash "$project_dir/persistent-overlay/usr/sbin/rg-ma2820-wifi-scan" wl1)
 
 printf '%s' "$result" | jq -e '
 	.networks | length == 2 and

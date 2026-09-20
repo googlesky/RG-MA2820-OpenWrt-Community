@@ -148,7 +148,7 @@ run_status()
 	RG_MA2820_PIDOF="$temporary/pidof" RG_MA2820_DATE="$temporary/date" \
 	RG_MA2820_UNAME="$temporary/uname" RG_MA2820_RESOLV_FILE="$temporary/resolv.conf" \
 	RG_MA2820_INIT_ROOT="$init_root" RG_MA2820_LED_STATE="$temporary/led.state" \
-	sh "$project_dir/persistent-overlay/usr/sbin/rg-ma2820-overview-status"
+	bash "$project_dir/persistent-overlay/usr/sbin/rg-ma2820-overview-status"
 }
 
 result=$(run_status)
