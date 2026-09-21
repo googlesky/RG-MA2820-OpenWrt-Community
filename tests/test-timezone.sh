@@ -104,6 +104,17 @@ printf '%s\n' "$status" | grep -q '"zonename": "UTC"'
 printf '%s\n' "$status" | grep -q '"automatic": true'
 printf '%s\n' "$status" | grep -q '"initialized": false'
 
+run_helper --validate Asia/Ho_Chi_Minh true
+assert_value zonename UTC
+if run_helper --validate '../etc/passwd' true >/dev/null 2>&1; then
+	echo 'invalid timezone passed validation' >&2
+	exit 1
+fi
+if run_helper --validate Asia/Ho_Chi_Minh maybe >/dev/null 2>&1; then
+	echo 'invalid automatic flag passed validation' >&2
+	exit 1
+fi
+
 if run_helper --configure '../etc/passwd' 1 local >/dev/null 2>&1; then
 	echo 'invalid timezone was accepted' >&2
 	exit 1

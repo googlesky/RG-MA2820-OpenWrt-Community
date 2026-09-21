@@ -1,0 +1,137 @@
+#!/usr/bin/ucode
+// SPDX-License-Identifier: GPL-2.0-only
+'use strict';
+
+import { sha256 } from 'digest';
+import { stdin, popen, readfile, writefile, chmod, unlink } from 'fs';
+import { parse_env, hmac_sha256_hex, constant_equal, signed_response } from 'rg-ma2820.cluster';
+
+const CLUSTER_ENV = getenv('RG_MA2820_CLUSTER_ENV') || '/etc/rg-ma2820/cluster.env';
+const STATUS_HELPER = getenv('RG_MA2820_STATUS_HELPER') || '/usr/sbin/rg-ma2820-wifi-status';
+const SET_WIFI = getenv('RG_MA2820_SET_WIFI') || '/usr/sbin/rg-ma2820-set-wifi';
+const TIMEZONE = getenv('RG_MA2820_TIMEZONE') || '/usr/sbin/rg-ma2820-timezone';
+const NONCE_CACHE = getenv('RG_MA2820_NONCE_CACHE') || '/tmp/rg-ma2820-cluster-nonces';
+const MAX_BODY = 32768;
+
+function reply(code, object, key, nonce) {
+	let reason = code == 200 ? 'OK' : code == 400 ? 'Bad Request' :
+		code == 401 ? 'Unauthorized' : code == 404 ? 'Not Found' :
+		code == 409 ? 'Conflict' : 'Internal Server Error';
+	let body = key && nonce ? signed_response(key, nonce, object) : object;
+	printf('Status: %d %s\r\n', code, reason);
+	printf('Content-Type: application/json\r\n');
+	printf('Cache-Control: no-store\r\n');
+	printf('X-Content-Type-Options: nosniff\r\n\r\n');
+	printf('%J\n', body);
+	exit(code == 200 ? 0 : 1);
+}
+
+function helper_json(command) {
+	let proc = popen(command, 'r');
+	if (!proc)
+		return null;
+	let output = proc.read('all');
+	let code = proc.close();
+	if (code || !output)
+		return null;
+	try { return json(trim(output)); }
+	catch (e) { return null; }
+}
+
+function nonce_seen(nonce) {
+	let old = readfile(NONCE_CACHE) || '';
+	for (let value in split(old, '\n'))
+		if (value == nonce)
+			return true;
+	let values = filter(split(old, '\n'), value => match(value, /^[0-9a-f]{32}$/));
+	push(values, nonce);
+	if (length(values) > 128)
+		values = slice(values, length(values) - 128);
+	writefile(NONCE_CACHE, join('\n', values) + '\n');
+	return false;
+}
+
+function run_wifi(mode, body, nonce) {
+	let input = `/tmp/rg-ma2820-cluster-wifi-${nonce}.json`;
+	if (writefile(input, body) != length(body) || !chmod(input, 0o600)) {
+		unlink(input);
+		return 1;
+	}
+	/* Capture all child output so no service log can precede the CGI headers.
+	 * The temporary pathname is derived solely from the validated hex nonce. */
+	let proc = popen(`${SET_WIFI} --${mode}-json-file ${input} 2>&1`, 'r');
+	if (!proc) {
+		unlink(input);
+		return 1;
+	}
+	proc.read('all');
+	let code = proc.close();
+	unlink(input);
+	return code || 0;
+}
+
+let config = parse_env(CLUSTER_ENV);
+if (config.CLUSTER_ENABLED != '1' || !match(config.CLUSTER_ID || '', /^[0-9a-f]{16}$/) ||
+    !match(config.CLUSTER_KEY || '', /^[0-9a-f]{64}$/))
+	reply(404, { error: 'cluster_disabled' });
+
+let method = getenv('REQUEST_METHOD') || 'GET';
+let action = replace(getenv('QUERY_STRING') || '', /^action=/, '');
+let nonce = lc(getenv('HTTP_X_RG_NONCE') || '');
+let signature = lc(getenv('HTTP_X_RG_SIGNATURE') || '');
+let cluster = lc(getenv('HTTP_X_RG_CLUSTER') || '');
+let length_value = +(getenv('CONTENT_LENGTH') || 0);
+
+if (!match(nonce, /^[0-9a-f]{32}$/) || !match(signature, /^[0-9a-f]{64}$/) ||
+    cluster != config.CLUSTER_ID)
+	reply(401, { error: 'invalid_authentication' });
+if (length_value < 0 || length_value > MAX_BODY)
+	reply(400, { error: 'invalid_body_size' });
+let body = length_value ? stdin.read(length_value) : '';
+if (length(body) != length_value)
+	reply(400, { error: 'incomplete_body' });
+let expected = hmac_sha256_hex(config.CLUSTER_KEY,
+	`${method}\n${action}\n${nonce}\n${sha256(body)}`);
+if (!constant_equal(expected, signature))
+	reply(401, { error: 'signature_mismatch' });
+
+if (method == 'GET' && action == 'status') {
+	let status = helper_json(STATUS_HELPER);
+	if (!status)
+		reply(500, { error: 'status_unavailable' }, config.CLUSTER_KEY, nonce);
+	reply(200, { api: 1, cluster_id: config.CLUSTER_ID, status }, config.CLUSTER_KEY, nonce);
+}
+
+if (method == 'POST' && (action == 'validate_wifi' || action == 'apply_wifi')) {
+	if (nonce_seen(nonce))
+		reply(409, { error: 'replayed_request' }, config.CLUSTER_KEY, nonce);
+	let request;
+	try { request = json(body); }
+	catch (e) { reply(400, { error: 'invalid_json' }, config.CLUSTER_KEY, nonce); }
+	if (type(request) != 'object')
+		reply(400, { error: 'invalid_wifi_profile' }, config.CLUSTER_KEY, nonce);
+	request.scope = 'local';
+	let code = run_wifi(action == 'validate_wifi' ? 'validate' : 'configure',
+		sprintf('%J', request), nonce);
+	reply(code == 0 ? 200 : 400,
+		{ success: code == 0, exit_code: code }, config.CLUSTER_KEY, nonce);
+}
+
+if (method == 'POST' && (action == 'validate_timezone' || action == 'apply_timezone')) {
+	if (nonce_seen(nonce))
+		reply(409, { error: 'replayed_request' }, config.CLUSTER_KEY, nonce);
+	let request;
+	try { request = json(body); }
+	catch (e) { reply(400, { error: 'invalid_json' }, config.CLUSTER_KEY, nonce); }
+	if (type(request) != 'object' || type(request.zone) != 'string' ||
+	    type(request.automatic) != 'bool')
+		reply(400, { error: 'invalid_timezone_profile' }, config.CLUSTER_KEY, nonce);
+	let automatic = request.automatic ? '1' : '0';
+	let code = action == 'validate_timezone'
+		? system([ TIMEZONE, '--validate', request.zone, automatic ])
+		: system([ TIMEZONE, '--configure', request.zone, automatic, 'local' ]);
+	reply(code == 0 ? 200 : 400,
+		{ success: code == 0, exit_code: code }, config.CLUSTER_KEY, nonce);
+}
+
+reply(404, { error: 'unknown_action' }, config.CLUSTER_KEY, nonce);

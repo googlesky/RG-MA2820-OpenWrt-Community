@@ -106,4 +106,31 @@ if sh "$steering" --steer wl1 aa:bb:cc:dd:ee:ff; then
 fi
 [ "$(wc -l < "$TEST_ACTIONS")" = "$before" ]
 
+# Community steering needs a recently installed authenticated neighbor, not
+# just an unauthenticated mDNS service that happens to claim cluster membership.
+cat > "$temporary/cluster.env" <<'EOF'
+CLUSTER_ENABLED='1'
+CLUSTER_ID='0123456789abcdef'
+EOF
+export RG_MA2820_CLUSTER_ENV="$temporary/cluster.env"
+export RG_MA2820_CLUSTER_NEIGHBORS="$temporary/cluster-neighbors.state"
+if sh "$steering" --steer wl1 aa:bb:cc:dd:ee:ff; then
+	echo 'community steering unexpectedly accepted absent authenticated neighbors' >&2
+	exit 1
+fi
+printf '%s\n' 'ffffffffffffffff' > "$RG_MA2820_CLUSTER_NEIGHBORS"
+if sh "$steering" --steer wl1 aa:bb:cc:dd:ee:ff; then
+	echo 'community steering unexpectedly accepted the wrong cluster' >&2
+	exit 1
+fi
+printf '%s\n' '0123456789abcdef' > "$RG_MA2820_CLUSTER_NEIGHBORS"
+touch -d '2 minutes ago' "$RG_MA2820_CLUSTER_NEIGHBORS"
+if sh "$steering" --steer wl1 aa:bb:cc:dd:ee:ff; then
+	echo 'community steering unexpectedly accepted expired neighbor state' >&2
+	exit 1
+fi
+touch "$RG_MA2820_CLUSTER_NEIGHBORS"
+sh "$steering" --steer wl1 aa:bb:cc:dd:ee:ff
+grep -q 'manual interface=wl1 sta=aa:bb:cc:dd:ee:ff' "$temporary/events"
+
 echo 'active roaming steering tests: PASS'

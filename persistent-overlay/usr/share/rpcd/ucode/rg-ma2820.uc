@@ -2,7 +2,7 @@
 
 'use strict';
 
-import { popen } from 'fs';
+import { popen, access } from 'fs';
 
 const STATUS = getenv('RG_MA2820_STATUS_HELPER') || '/usr/sbin/rg-ma2820-wifi-status';
 const PEER_STATUS = getenv('RG_MA2820_PEER_STATUS_HELPER') ||
@@ -16,6 +16,8 @@ const SET_WIFI = '/usr/sbin/rg-ma2820-set-wifi';
 const TIMEZONE = '/usr/sbin/rg-ma2820-timezone';
 const STEERING = '/usr/libexec/rg-ma2820/roaming-steer';
 const HOSTAPD_CLI = '/opt/bcm/sbin/hostapd_cli';
+const CLUSTER = '/usr/sbin/rg-ma2820-cluster';
+const COMMUNITY = access('/etc/rg-ma2820/community-build');
 
 function read_json_helper(command) {
 	let proc = popen(command, 'r');
@@ -153,6 +155,8 @@ const methods = {
 
 	status: {
 		call: function() {
+			if (COMMUNITY)
+				return read_json_helper(`${CLUSTER} status`);
 			/* rpcd integrates its ucode VM with a non-blocking event loop. Opening
 			 * a second popen before draining the first can make read('all') observe
 			 * an empty, still-running pipe. Drain the authoritative local snapshot
@@ -183,10 +187,12 @@ const methods = {
 		args: { zonename: '', automatic: true, scope: 'pair' },
 		call: function(req) {
 			let a = req.args || {};
-			let code = system([
-				TIMEZONE, '--configure', a.zonename || '',
-				a.automatic ? '1' : '0', a.scope || 'pair'
-			]);
+			let code = COMMUNITY && a.scope == 'cluster'
+				? system([ CLUSTER, 'apply-timezone', a.zonename || '', a.automatic ? '1' : '0' ])
+				: system([
+					TIMEZONE, '--configure', a.zonename || '',
+					a.automatic ? '1' : '0', a.scope || 'pair'
+				]);
 			let status = read_json_helper(`${TIMEZONE} status`);
 			status.success = code == 0;
 			status.exit_code = code;
@@ -200,12 +206,40 @@ const methods = {
 		args: configure_args,
 		call: function(req) {
 			let payload = sprintf('%J', req.args || {});
-			let code = system([ SET_WIFI, '--configure-json', payload ]);
+			let code = COMMUNITY && req.args?.scope == 'cluster'
+				? system([ CLUSTER, 'apply-wifi', payload ])
+				: system([ SET_WIFI, '--configure-json', payload ]);
 			return {
 				success: code == 0,
 				exit_code: code,
 				error: code == 0 ? null : 'configuration_rejected'
 			};
+		}
+	},
+
+	cluster_status: {
+		call: function() {
+			if (!COMMUNITY)
+				return { supported: false };
+			let status = read_json_helper(`${CLUSTER} status`);
+			return {
+				supported: true,
+				cluster: status.cluster || {},
+				nodes: status.cluster_nodes || []
+			};
+		}
+	},
+
+	configure_cluster: {
+		args: { enabled: true, name: '', secret: '' },
+		call: function(req) {
+			if (!COMMUNITY)
+				return { success: false, error: 'unsupported' };
+			let a = req.args || {};
+			let code = a.enabled
+				? system([ CLUSTER, 'configure', a.name || '', a.secret || '' ])
+				: system([ CLUSTER, 'disable' ]);
+			return { success: code == 0, exit_code: code };
 		}
 	},
 
@@ -226,12 +260,17 @@ const methods = {
 			if (a.action == 'restart' || a.action == 'reselect') {
 				system([ '/etc/init.d/rg-ma2820-roaming', 'stop' ]);
 				let code = system([ '/etc/init.d/rg-ma2820-wifi', 'restart' ]);
-				system([ '/etc/init.d/rg-ma2820-neighbor-sync', 'restart' ]);
+				if (COMMUNITY)
+					system([ CLUSTER, 'sync-neighbors' ]);
+				else
+					system([ '/etc/init.d/rg-ma2820-neighbor-sync', 'restart' ]);
 				system([ '/etc/init.d/rg-ma2820-roaming', 'restart' ]);
 				return { success: code == 0, exit_code: code };
 			}
 			if (a.action == 'refresh_neighbors') {
-				let code = system([ '/etc/init.d/rg-ma2820-neighbor-sync', 'restart' ]);
+				let code = COMMUNITY
+					? system([ CLUSTER, 'sync-neighbors' ])
+					: system([ '/etc/init.d/rg-ma2820-neighbor-sync', 'restart' ]);
 				return { success: code == 0, exit_code: code };
 			}
 			if (a.action == 'steer' && valid_interface(a.interface, true) && valid_mac(a.mac)) {

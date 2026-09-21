@@ -1,0 +1,252 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=07
+STOP=93
+
+ETC_ROOT=${RG_MA2820_ETC_ROOT:-/etc}
+DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-$ETC_ROOT/rg-ma2820/device.env}
+CLUSTER_ENV=${RG_MA2820_CLUSTER_ENV:-$ETC_ROOT/rg-ma2820/cluster.env}
+CALIBRATION=${RG_MA2820_CALIBRATION:-$ETC_ROOT/rg-ma2820/kernel_nvram.setting}
+DATA_SOURCE=${RG_MA2820_DATA_SOURCE:-}
+DATA_MOUNT=${RG_MA2820_DATA_MOUNT:-/mnt/rg-ma2820-stock-data}
+PROC_MTD=${RG_MA2820_PROC_MTD:-/proc/mtd}
+UBI_CLASS=${RG_MA2820_UBI_CLASS:-/sys/class/ubi}
+UMDNS_DIR=${RG_MA2820_UMDNS_DIR:-$ETC_ROOT/umdns}
+DROPBEAR_DIR=${RG_MA2820_DROPBEAR_DIR:-$ETC_ROOT/dropbear}
+DROPBEARKEY=${RG_MA2820_DROPBEARKEY:-/usr/bin/dropbearkey}
+HOSTNAME_FILE=${RG_MA2820_HOSTNAME_FILE:-/proc/sys/kernel/hostname}
+RELEASE_FILE=${RG_MA2820_RELEASE_FILE:-$ETC_ROOT/rg-ma2820/release}
+MARKER=${RG_MA2820_PROVISION_MARKER:-$ETC_ROOT/rg-ma2820/.community-provisioned-v1}
+LOG_CONSOLE=${RG_MA2820_LOG_CONSOLE:-/dev/console}
+
+log()
+{
+	logger -t rg-ma2820-provision "$*" 2>/dev/null || true
+	[ ! -w "$LOG_CONSOLE" ] ||
+		echo "rg-ma2820-provision: $*" > "$LOG_CONSOLE" 2>/dev/null || true
+}
+
+die()
+{
+	log "ERROR: $*"
+	return 1
+}
+
+env_value()
+{
+	local file="$1" key="$2"
+	sed -n "s/^${key}='\([^']*\)'/\1/p" "$file" 2>/dev/null | head -n 1
+}
+
+nvram_value()
+{
+	local key="$1"
+	sed -n "s#^${key}=[[:space:]]*##p" "$DATA_SOURCE" 2>/dev/null |
+		head -n 1 | tr -d '\000-\037\177'
+}
+
+nvram_mac()
+{
+	nvram_value "$1" | tr -cd '0-9A-Fa-f:' | tr 'A-F' 'a-f'
+}
+
+valid_mac()
+{
+	echo "$1" | grep -Eq '^[0-9a-f][02468ace](:[0-9a-f]{2}){5}$' &&
+		[ "$1" != 00:00:00:00:00:00 ]
+}
+
+mac_add_one()
+{
+	echo "$1" | awk -F: '
+		function nibble(c) { return index("0123456789abcdef", tolower(c)) - 1 }
+		function octet(s) { return nibble(substr(s, 1, 1)) * 16 + nibble(substr(s, 2, 1)) }
+		BEGIN { OFS=":" }
+		{
+			carry=1
+			for (i=6; i>=1; i--) {
+				n=octet($i)+carry
+				if (n > 255) { n=0; carry=1 } else { carry=0 }
+				$i=sprintf("%02x", n)
+			}
+			if (carry) exit 1
+			print $1,$2,$3,$4,$5,$6
+		}'
+}
+
+find_ubi_for_mtd()
+{
+	local wanted="$1" entry number
+	for entry in "$UBI_CLASS"/ubi*/mtd_num; do
+		[ -r "$entry" ] || continue
+		read -r number < "$entry"
+		[ "$number" = "$wanted" ] || continue
+		basename "${entry%/mtd_num}" | sed 's/^ubi//'
+		return 0
+	done
+	return 1
+}
+
+mount_factory_data()
+{
+	local mtd ubi
+	[ -n "$DATA_SOURCE" ] && return 0
+	mtd=$(sed -n 's/^mtd\([0-9][0-9]*\):.*"data"$/\1/p' "$PROC_MTD" | head -n 1)
+	[ -n "$mtd" ] || die 'factory data MTD was not found'
+	ubi=$(find_ubi_for_mtd "$mtd" 2>/dev/null || true)
+	if [ -z "$ubi" ]; then
+		ubiattach -m "$mtd" >/dev/null 2>&1 || die "could not attach factory data mtd$mtd"
+		ubi=$(find_ubi_for_mtd "$mtd" 2>/dev/null || true)
+	fi
+	[ -n "$ubi" ] || die "could not resolve UBI device for factory data mtd$mtd"
+	mkdir -p "$DATA_MOUNT" || return 1
+	grep -q " $DATA_MOUNT " /proc/mounts 2>/dev/null ||
+		mount -t ubifs -o ro "ubi${ubi}:data" "$DATA_MOUNT" >/dev/null 2>&1 ||
+		die 'could not mount preserved factory data read-only'
+	DATA_SOURCE=$DATA_MOUNT/.kernel_nvram.setting
+}
+
+validate_calibration()
+{
+	local size boardnum boardtype
+	[ -s "$DATA_SOURCE" ] || die 'factory radio calibration is missing'
+	size=$(wc -c < "$DATA_SOURCE")
+	[ "$size" -ge 4096 ] && [ "$size" -le 65536 ] ||
+		die "factory radio calibration has an invalid size: $size"
+	boardnum=$(nvram_value boardnum | tr -cd '0-9')
+	boardtype=$(nvram_value boardtype | tr 'A-F' 'a-f' | tr -cd '0-9a-fx')
+	[ "$boardnum" = 6755 ] || die "unexpected calibration board number: ${boardnum:-missing}"
+	[ "$boardtype" = 0x08a9 ] || die "unexpected calibration board type: ${boardtype:-missing}"
+}
+
+install_calibration()
+{
+	mkdir -p "${CALIBRATION%/*}" || return 1
+	if ! cmp -s "$DATA_SOURCE" "$CALIBRATION"; then
+		cp "$DATA_SOURCE" "$CALIBRATION.new" || return 1
+		chmod 0600 "$CALIBRATION.new" || return 1
+		mv -f "$CALIBRATION.new" "$CALIBRATION" || return 1
+	fi
+}
+
+write_identity()
+{
+	local ethernet radio2 radio5 legacy compact suffix sum first second
+	local system_format image_compat factory_root_hash factory_ssid
+	local factory_security factory_country
+	ethernet=$(nvram_mac et0macaddr)
+	radio2=$(nvram_mac 'sb/0/macaddr')
+	radio5=$(nvram_mac 'sb/1/macaddr')
+	valid_mac "$ethernet" || die 'factory Ethernet MAC is invalid'
+	valid_mac "$radio2" || die 'factory 2.4 GHz MAC is invalid'
+	valid_mac "$radio5" || die 'factory 5 GHz MAC is invalid'
+	legacy=$(mac_add_one "$radio5") || die 'could not allocate the compatibility BSSID'
+	valid_mac "$legacy" || die 'derived compatibility BSSID is invalid'
+	[ "$legacy" != "$ethernet" ] && [ "$legacy" != "$radio2" ] ||
+		die 'derived compatibility BSSID collides with factory identity'
+
+	compact=$(echo "$ethernet" | tr -d ':')
+	suffix=$(echo "$compact" | sed 's/.*\(.\{6\}\)$/\1/')
+	sum=$(printf %s "$ethernet" | cksum | awk '{print $1}')
+	first=$((sum / 256 % 254 + 1))
+	second=$((sum % 254 + 1))
+
+	system_format=$(env_value "$DEVICE_ENV" SYSTEM_FORMAT)
+	image_compat=$(env_value "$DEVICE_ENV" IMAGE_COMPAT)
+	factory_root_hash=$(env_value "$DEVICE_ENV" FACTORY_ROOT_HASH)
+	factory_ssid=$(env_value "$DEVICE_ENV" FACTORY_SSID_BASE)
+	factory_security=$(env_value "$DEVICE_ENV" FACTORY_WIFI_SECURITY)
+	factory_country=$(env_value "$DEVICE_ENV" FACTORY_COUNTRY_CODE)
+	[ -n "$system_format" ] || system_format=3
+	[ -n "$image_compat" ] || image_compat=rg-ma2820t-community-v1
+	[ -n "$factory_ssid" ] || factory_ssid=RG-MA2820-Setup
+	[ -n "$factory_security" ] || factory_security=open
+	[ -n "$factory_country" ] || factory_country=US
+
+	cat > "$DEVICE_ENV.new" <<EOF
+DEVICE_ID='node-$suffix'
+HOSTNAME='rg-ma2820-$suffix'
+RESCUE_LINK_LOCAL='169.254.$first.$second'
+PEER_ID=''
+PEER_HOSTNAME=''
+PEER_LINK_LOCAL=''
+LOCAL_BSSID_2G='$radio2'
+LOCAL_BSSID_5G='$radio5'
+LOCAL_BSSID_5G_LEGACY='$legacy'
+PEER_BSSID_2G='00:00:00:00:00:00'
+PEER_BSSID_5G='00:00:00:00:00:00'
+PEER_BSSID_5G_LEGACY='00:00:00:00:00:00'
+SYSTEM_FORMAT='$system_format'
+IMAGE_COMPAT='$image_compat'
+COMMUNITY_AUTOPROVISION='1'
+FACTORY_ROOT_HASH='$factory_root_hash'
+FACTORY_SSID_BASE='$factory_ssid'
+FACTORY_WIFI_SECURITY='$factory_security'
+FACTORY_COUNTRY_CODE='$factory_country'
+EOF
+	chmod 0600 "$DEVICE_ENV.new" || return 1
+	mv -f "$DEVICE_ENV.new" "$DEVICE_ENV" || return 1
+}
+
+generate_host_keys()
+{
+	local type bits key
+	[ -x "$DROPBEARKEY" ] || die 'dropbearkey is unavailable'
+	mkdir -p "$DROPBEAR_DIR" || return 1
+	chmod 0700 "$DROPBEAR_DIR" || return 1
+	for type in rsa ecdsa ed25519; do
+		key=$DROPBEAR_DIR/dropbear_${type}_host_key
+		[ -s "$key" ] && continue
+		case "$type" in rsa) bits='-s 3072' ;; ecdsa) bits='-s 256' ;; *) bits= ;; esac
+		# Word splitting is intentional for the optional two-argument size flag.
+		# shellcheck disable=SC2086
+		"$DROPBEARKEY" -t "$type" $bits -f "$key.new" >/dev/null 2>&1 ||
+			die "could not generate the Dropbear $type host key"
+		chmod 0600 "$key.new" || return 1
+		mv -f "$key.new" "$key" || return 1
+	done
+}
+
+write_mdns_service()
+{
+	local device hostname release cluster_id
+	device=$(env_value "$DEVICE_ENV" DEVICE_ID)
+	hostname=$(env_value "$DEVICE_ENV" HOSTNAME)
+	release=$(sed -n '1p' "$RELEASE_FILE" 2>/dev/null | tr -cd 'A-Za-z0-9._-')
+	cluster_id=$(env_value "$CLUSTER_ENV" CLUSTER_ID)
+	[ -n "$release" ] || release=unknown
+	[ -n "$cluster_id" ] || cluster_id=standalone
+	mkdir -p "$UMDNS_DIR" || return 1
+	cat > "$UMDNS_DIR/rg-ma2820.json.new" <<EOF
+{
+  "rg_ma2820": {
+    "instance": "$hostname",
+    "service": "_rg-ma2820._tcp.local",
+    "port": 80,
+    "hostname": "$hostname.local",
+    "txt": ["api=1", "model=RG-MA2820T", "node=$device", "cluster=$cluster_id", "release=$release"]
+  }
+}
+EOF
+	chmod 0644 "$UMDNS_DIR/rg-ma2820.json.new" || return 1
+	mv -f "$UMDNS_DIR/rg-ma2820.json.new" "$UMDNS_DIR/rg-ma2820.json" || return 1
+}
+
+start()
+{
+	mount_factory_data || return 1
+	validate_calibration || return 1
+	install_calibration || return 1
+	write_identity || return 1
+	generate_host_keys || return 1
+	write_mdns_service || return 1
+	. "$DEVICE_ENV"
+	[ ! -w "$HOSTNAME_FILE" ] || printf '%s\n' "$HOSTNAME" > "$HOSTNAME_FILE"
+	if command -v uci >/dev/null 2>&1; then
+		uci -q set "system.@system[0].hostname=$HOSTNAME"
+		uci -q commit system
+	fi
+	: > "$MARKER"
+	log "provisioned $DEVICE_ID from preserved factory calibration"
+}

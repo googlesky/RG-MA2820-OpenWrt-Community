@@ -84,18 +84,24 @@ rpc_api_healthy()
 
 rpc_status_healthy()
 {
-	local response expected_device expected_peer actual_device actual_peer
+	local response expected_device expected_peer actual_device actual_peer community
 	local available online
 	[ -r "$DEVICE_ENV" ] || return 1
 	expected_device="$(sed -n "s/^DEVICE_ID=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$DEVICE_ENV" | head -n 1)"
 	expected_peer="$(sed -n "s/^PEER_ID=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$DEVICE_ENV" | head -n 1)"
-	[ -n "$expected_device" ] && [ -n "$expected_peer" ] || return 1
+	community="$(sed -n "s/^COMMUNITY_AUTOPROVISION=['\"]\{0,1\}\([^'\"]*\).*/\1/p" "$DEVICE_ENV" | head -n 1)"
+	[ -n "$expected_device" ] || return 1
 	response="$(ubus call luci.rg-ma2820 status '{}' 2>/dev/null)" || return 1
 	actual_device="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.device_id')" || return 1
+	[ "$actual_device" = "$expected_device" ] || return 1
+	if [ "$community" = 1 ]; then
+		case "$expected_device" in node-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) return 1 ;; esac
+		return 0
+	fi
+	[ -n "$expected_peer" ] || return 1
 	actual_peer="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.peer_status.device_id')" || return 1
 	available="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.peer_status.available')" || return 1
 	online="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.peer_status.online')" || return 1
-	[ "$actual_device" = "$expected_device" ] || return 1
 	[ "$actual_peer" = "$expected_peer" ] || return 1
 	case "$available:$online" in
 		true:true|false:true|false:false) return 0 ;;
@@ -120,6 +126,13 @@ ensure_rpc_api()
 trial_system_healthy()
 {
 	local profile
+	if grep -qx "COMMUNITY_AUTOPROVISION='1'" "$DEVICE_ENV" 2>/dev/null; then
+		[ -s /etc/rg-ma2820/kernel_nvram.setting ] || return 1
+		[ -e /etc/rg-ma2820/.community-provisioned-v1 ] || return 1
+		[ -x /usr/sbin/rg-ma2820-cluster ] || return 1
+		[ -x /www/cgi-bin/rg-ma2820-cluster ] || return 1
+		/usr/sbin/rg-ma2820-cluster selftest >/dev/null 2>&1 || return 1
+	fi
 
 	[ -s "$WIFI_STATE" ] || return 1
 	profile="$(sed -n 's/^PROFILE=//p' "$WIFI_STATE" | head -n 1)"

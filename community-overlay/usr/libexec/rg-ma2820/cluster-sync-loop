@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+INTERVAL=${RG_MA2820_CLUSTER_SYNC_INTERVAL:-60}
+CLUSTER=/usr/sbin/rg-ma2820-cluster
+
+while true; do
+	if [ -r /etc/rg-ma2820/cluster.env ]; then
+		. /etc/rg-ma2820/cluster.env
+		[ "${CLUSTER_ENABLED:-0}" != 1 ] ||
+			"$CLUSTER" sync-neighbors >/dev/null 2>&1 || true
+	fi
+	sleep "$INTERVAL"
+done

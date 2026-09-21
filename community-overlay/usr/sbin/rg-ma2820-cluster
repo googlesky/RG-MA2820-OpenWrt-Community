@@ -1,0 +1,408 @@
+#!/usr/bin/ucode
+// SPDX-License-Identifier: GPL-2.0-only
+'use strict';
+
+import { sha256 } from 'digest';
+import * as libubus from 'ubus';
+import { popen, readfile, writefile, chmod, rename, unlink } from 'fs';
+import { parse_env, discover_members, hmac_sha256_hex, verify_response } from 'rg-ma2820.cluster';
+
+const CLUSTER_ENV = getenv('RG_MA2820_CLUSTER_ENV') || '/etc/rg-ma2820/cluster.env';
+const DEVICE_ENV = getenv('RG_MA2820_DEVICE_ENV') || '/etc/rg-ma2820/device.env';
+const WIFI_ENV = getenv('RG_MA2820_WIFI_ENV') || '/etc/rg-ma2820/wifi.env';
+const STATUS_HELPER = getenv('RG_MA2820_STATUS_HELPER') || '/usr/sbin/rg-ma2820-wifi-status';
+const SET_WIFI = getenv('RG_MA2820_SET_WIFI') || '/usr/sbin/rg-ma2820-set-wifi';
+const FETCH = getenv('RG_MA2820_FETCH') || '/bin/uclient-fetch';
+const HOSTAPD_CLI = getenv('RG_MA2820_HOSTAPD_CLI') || '/opt/bcm/sbin/hostapd_cli';
+const PROVISION_INIT = getenv('RG_MA2820_PROVISION_INIT') || '/etc/init.d/rg-ma2820-provision';
+const UMDNS_INIT = getenv('RG_MA2820_UMDNS_INIT') || '/etc/init.d/umdns';
+const WIFI_INIT = getenv('RG_MA2820_WIFI_INIT') || '/etc/init.d/rg-ma2820-wifi';
+const TIMEZONE = getenv('RG_MA2820_TIMEZONE') || '/usr/sbin/rg-ma2820-timezone';
+const NEIGHBOR_STATE = getenv('RG_MA2820_CLUSTER_NEIGHBORS') || '/var/run/rg-ma2820-cluster-neighbors.state';
+
+function usage() {
+	warn('usage: rg-ma2820-cluster status|members|configure NAME SECRET|disable|apply-wifi JSON|apply-timezone ZONE 0|1|sync-neighbors|selftest\n');
+	exit(2);
+}
+
+function read_json_helper(command) {
+	let proc = popen(command, 'r');
+	if (!proc)
+		return null;
+	let output = proc.read('all');
+	let code = proc.close();
+	if (code || !output)
+		return null;
+	try { return json(trim(output)); }
+	catch (e) { return null; }
+}
+
+function discover(config, device) {
+	if (config.CLUSTER_ENABLED != '1')
+		return [];
+	let connection = libubus.connect();
+	if (!connection)
+		return [];
+	try { connection.call('umdns', 'update', {}); }
+	catch (e) { /* a cached browse result is still useful */ }
+	let browse;
+	try { browse = connection.call('umdns', 'browse', { array: true, address: true }); }
+	catch (e) { return []; }
+	return discover_members(browse, config, device);
+}
+
+function random_nonce() {
+	let bytes = readfile('/dev/urandom', 16);
+	return bytes && length(bytes) == 16 ? hexenc(bytes) : null;
+}
+
+function remote_call(peer, config, method, action, body) {
+	body ??= '';
+	let nonce = random_nonce();
+	if (!nonce)
+		return null;
+	let signature = hmac_sha256_hex(config.CLUSTER_KEY,
+		`${method}\n${action}\n${nonce}\n${sha256(body)}`);
+	let output = `/tmp/rg-ma2820-cluster-${nonce}.json`;
+	/* Radio reconfiguration can take longer than a status query. Do not time
+	 * out an applied remote profile and incorrectly report it as rejected. */
+	let timeout = action == 'status' ? '4' : action == 'apply_wifi' ? '45' : '15';
+	let args = [ FETCH, '-4', '-q', '-T', timeout, '-O', output,
+		`--header=X-RG-Cluster: ${config.CLUSTER_ID}`,
+		`--header=X-RG-Nonce: ${nonce}`,
+		`--header=X-RG-Signature: ${signature}` ];
+	if (method == 'POST')
+		push(args, `--post-data=${body}`);
+	push(args, `http://${peer.address}/cgi-bin/rg-ma2820-cluster?action=${action}`);
+	let code = system(args);
+	let response = readfile(output);
+	if (response != null)
+		unlink(output);
+	if (code || !response)
+		return null;
+	let envelope;
+	try { envelope = json(response); }
+	catch (e) { return null; }
+	return verify_response(config.CLUSTER_KEY, nonce, envelope);
+}
+
+function local_status() {
+	return read_json_helper(STATUS_HELPER);
+}
+
+function authenticated_peers(config, peers) {
+	for (let peer in peers) {
+		/* mDNS is only a candidate source. Prove possession of the cluster key
+		 * before sending a configuration body, which can contain WLAN secrets. */
+		let reply = remote_call(peer, config, 'GET', 'status');
+		if (!reply || reply.api != 1 || reply.cluster_id != config.CLUSTER_ID ||
+		    reply.status?.device_id != peer.device_id) {
+			warn(`peer ${peer.device_id} failed cluster authentication\n`);
+			return null;
+		}
+	}
+	return peers;
+}
+
+function collect() {
+	let config = parse_env(CLUSTER_ENV);
+	let device = parse_env(DEVICE_ENV);
+	let local = local_status();
+	if (!local)
+		return { error: 'local_status_unavailable' };
+	let nodes = [ { ...local, local: true, available: true, address: local.management_address || '' } ];
+	let discovered = discover(config, device);
+	for (let peer in discovered) {
+		let reply = remote_call(peer, config, 'GET', 'status');
+		if (!reply || reply.api != 1 || reply.cluster_id != config.CLUSTER_ID ||
+		    reply.status?.device_id != peer.device_id) {
+			push(nodes, { ...peer, local: false, available: false, error: 'status_unavailable', radios: [] });
+			continue;
+		}
+		push(nodes, { ...reply.status, local: false, available: true, address: peer.address });
+	}
+	let online = length(filter(nodes, node => node.available));
+	let hashes = {};
+	let radios_ready = true;
+	for (let node in nodes) {
+		if (!node.available) { radios_ready = false; continue; }
+		if (node.config_hash) hashes[node.config_hash] = true;
+		for (let radio in node.radios || [])
+			if (!radio.online) radios_ready = false;
+	}
+	let synced = length(keys(hashes)) <= 1;
+	local.config ??= {};
+	local.config.scope = config.CLUSTER_ENABLED == '1' ? 'cluster' : 'local';
+	if (config.CLUSTER_MOBILITY_DOMAIN)
+		local.config.mobility_domain = config.CLUSTER_MOBILITY_DOMAIN;
+	local.cluster = {
+		enabled: config.CLUSTER_ENABLED == '1',
+		name: config.CLUSTER_NAME || '',
+		id: config.CLUSTER_ID || 'standalone',
+		node_count: length(nodes),
+		online_count: online,
+		config_synced: synced,
+		ready: config.CLUSTER_ENABLED == '1' && online == length(nodes) && synced && radios_ready
+	};
+	local.cluster_nodes = nodes;
+	local.mesh_ready = local.cluster.ready;
+	local.config_synced = synced;
+	local.warnings = filter(local.warnings || [], warning =>
+		warning != 'peer_offline' && warning != 'config_drift' && warning != 'channel_overlap');
+	if (config.CLUSTER_ENABLED == '1' && online != length(nodes))
+		push(local.warnings, 'cluster_node_offline');
+	if (!synced)
+		push(local.warnings, 'config_drift');
+	return local;
+}
+
+function refresh_services(restart_wifi) {
+	system([ PROVISION_INIT, 'start' ]);
+	system([ UMDNS_INIT, 'restart' ]);
+	if (restart_wifi)
+		system([ WIFI_INIT, 'restart' ]);
+}
+
+function configure(name, secret) {
+	if (!match(name || '', /^[A-Za-z0-9._-]{1,32}$/) ||
+	    type(secret) != 'string' || length(secret) < 12 || length(secret) > 128) {
+		warn('cluster name must be 1-32 safe characters and secret must be 12-128 characters\n');
+		return 1;
+	}
+	let key = sha256(secret);
+	let id = substr(sha256(`cluster:${name}:${key}`), 0, 16);
+	let rrb = sha256(`rrb:${name}:${key}`);
+	let mobility = substr(sha256(`mobility:${name}:${key}`), 0, 4);
+	let temporary = `${CLUSTER_ENV}.new`;
+	let content =
+		"CLUSTER_CONFIG_VERSION='1'\n" +
+		"CLUSTER_ENABLED='1'\n" +
+		`CLUSTER_NAME='${name}'\n` +
+		`CLUSTER_ID='${id}'\n` +
+		`CLUSTER_KEY='${key}'\n` +
+		`CLUSTER_RRB_KEY='${rrb}'\n` +
+		`CLUSTER_MOBILITY_DOMAIN='${mobility}'\n`;
+	if (writefile(temporary, content) != length(content) || !chmod(temporary, 0o600) ||
+	    !rename(temporary, CLUSTER_ENV)) {
+		warn('could not persist cluster configuration\n');
+		return 1;
+	}
+	refresh_services(true);
+	print(sprintf('%J\n', { success: true, name, id, mobility_domain: mobility }));
+	return 0;
+}
+
+function disable() {
+	let temporary = `${CLUSTER_ENV}.new`;
+	let content = "CLUSTER_CONFIG_VERSION='1'\nCLUSTER_ENABLED='0'\nCLUSTER_NAME=''\n" +
+		"CLUSTER_ID='standalone'\nCLUSTER_KEY=''\nCLUSTER_RRB_KEY=''\n" +
+		"CLUSTER_MOBILITY_DOMAIN='4d41'\n";
+	if (writefile(temporary, content) != length(content) || !chmod(temporary, 0o600) ||
+	    !rename(temporary, CLUSTER_ENV))
+		return 1;
+	refresh_services(true);
+	print('{"success":true,"enabled":false}\n');
+	return 0;
+}
+
+function apply_wifi(payload) {
+	let config = parse_env(CLUSTER_ENV);
+	let device = parse_env(DEVICE_ENV);
+	if (config.CLUSTER_ENABLED != '1') {
+		warn('cluster is disabled\n');
+		return 1;
+	}
+	let request;
+	try { request = json(payload); }
+	catch (e) { warn('invalid Wi-Fi JSON\n'); return 1; }
+	if (type(request) != 'object')
+		return 1;
+	request.scope = 'local';
+	request.mobility_domain = config.CLUSTER_MOBILITY_DOMAIN;
+	let body = sprintf('%J', request);
+	if (system([ SET_WIFI, '--validate-json', body ]))
+		return 1;
+	let peers = authenticated_peers(config, discover(config, device));
+	if (peers == null)
+		return 1;
+	for (let peer in peers) {
+		let result = remote_call(peer, config, 'POST', 'validate_wifi', body);
+		if (!result?.success) {
+			warn(`peer ${peer.device_id} rejected Wi-Fi validation\n`);
+			return 1;
+		}
+	}
+	for (let peer in peers) {
+		let result = remote_call(peer, config, 'POST', 'apply_wifi', body);
+		if (!result?.success) {
+			warn(`peer ${peer.device_id} failed while applying Wi-Fi configuration\n`);
+			return 1;
+		}
+	}
+	let code = system([ SET_WIFI, '--configure-json', body ]);
+	print(sprintf('%J\n', { success: code == 0, exit_code: code, peers: length(peers) }));
+	return code;
+}
+
+function apply_timezone(zone, automatic) {
+	let config = parse_env(CLUSTER_ENV);
+	let device = parse_env(DEVICE_ENV);
+	if (config.CLUSTER_ENABLED != '1') {
+		warn('cluster is disabled\n');
+		return 1;
+	}
+	if (automatic != '0' && automatic != '1')
+		return 1;
+	if (system([ TIMEZONE, '--validate', zone, automatic ]))
+		return 1;
+	let body = sprintf('%J', { zone, automatic: automatic == '1' });
+	let peers = authenticated_peers(config, discover(config, device));
+	if (peers == null)
+		return 1;
+	for (let peer in peers) {
+		let result = remote_call(peer, config, 'POST', 'validate_timezone', body);
+		if (!result?.success) {
+			warn(`peer ${peer.device_id} rejected timezone validation\n`);
+			return 1;
+		}
+	}
+	for (let peer in peers) {
+		let result = remote_call(peer, config, 'POST', 'apply_timezone', body);
+		if (!result?.success) {
+			warn(`peer ${peer.device_id} failed while applying timezone\n`);
+			return 1;
+		}
+	}
+	let code = system([ TIMEZONE, '--configure', zone, automatic, 'local' ]);
+	print(sprintf('%J\n', { success: code == 0, exit_code: code, peers: length(peers) }));
+	return code;
+}
+
+function valid_mac(value) {
+	return match(lc(value || ''), /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/);
+}
+
+function operating_class(radio) {
+	let channel = +radio.channel;
+	let width = +radio.width;
+	if (radio.band == '2g')
+		return channel == 14 ? 82 : 81;
+	if (width == 80)
+		return 128;
+	if (width == 40) {
+		if (index([36,44], channel) >= 0) return 116;
+		if (index([40,48], channel) >= 0) return 117;
+		if (index([52,60], channel) >= 0) return 119;
+		if (index([56,64], channel) >= 0) return 120;
+		if (index([100,108,116,124,132,140], channel) >= 0) return 122;
+		if (index([104,112,120,128,136,144], channel) >= 0) return 123;
+		if (index([149,157,165], channel) >= 0) return 126;
+		if (index([153,161,169], channel) >= 0) return 127;
+	}
+	if (channel >= 36 && channel <= 48) return 115;
+	if (channel >= 52 && channel <= 64) return 118;
+	if (channel >= 100 && channel <= 144) return 121;
+	if (channel >= 149 && channel <= 161) return 124;
+	return 125;
+}
+
+function sync_neighbors() {
+	let status = collect();
+	if (status.error)
+		return 1;
+	let local = status.cluster_nodes?.[0];
+	let installed = 0;
+	for (let peer in slice(status.cluster_nodes || [], 1)) {
+		if (!peer.available)
+			continue;
+		for (let remote in peer.radios || []) {
+			if (!remote.online || !valid_mac(remote.bssid))
+				continue;
+			let target = null;
+			for (let candidate in local.radios || [])
+				if (candidate.online && candidate.ssid == remote.ssid && candidate.band == remote.band) {
+					target = candidate;
+					break;
+				}
+			if (!target || target.bssid == remote.bssid)
+				continue;
+			let channel = +remote.channel;
+			if (channel < 1 || channel > 196)
+				continue;
+			let info = remote.band == '2g' ? '8f080000' :
+				(remote.interface == 'wl1.1' ? '8f1c0000' : '8f180000');
+			let phy = remote.band == '2g' ? 7 : 9;
+			let nr = replace(remote.bssid, /:/g, '') + info +
+				sprintf('%02x%02x%02x', operating_class(remote), channel, phy);
+			system([ HOSTAPD_CLI, '-p', '/var/run/hostapd', '-i', target.interface,
+				'remove_neighbor', remote.bssid ]);
+			let code = system([ HOSTAPD_CLI, '-p', '/var/run/hostapd', '-i', target.interface,
+				'set_neighbor', remote.bssid, `ssid=${hexenc(remote.ssid)}`, `nr=${nr}` ]);
+			if (!code)
+				installed++;
+		}
+	}
+	/* Only an authenticated, successfully installed neighbor may enable
+	 * active steering. The state file's mtime bounds its validity if sync stops. */
+	if (installed) {
+		let id = `${status.cluster.id}\n`;
+		if (writefile(NEIGHBOR_STATE, id) != length(id)) {
+			warn('could not record authenticated neighbor state\n');
+			return 1;
+		}
+	}
+	else
+		unlink(NEIGHBOR_STATE);
+	print(sprintf('%J\n', { success: true, installed, nodes: length(status.cluster_nodes || []) }));
+	return 0;
+}
+
+function selftest() {
+	let key = '0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b000000000000000000000000';
+	let actual = hmac_sha256_hex(key, 'Hi There');
+	let expected = 'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7';
+	if (actual != expected)
+		return 1;
+	print('{"success":true,"hmac":"RFC4231"}\n');
+	return 0;
+}
+
+let command = ARGV[0] || '';
+let code;
+switch (command) {
+case 'status':
+	print(sprintf('%J\n', collect()));
+	code = 0;
+	break;
+case 'members': {
+	let config = parse_env(CLUSTER_ENV);
+	let device = parse_env(DEVICE_ENV);
+	print(sprintf('%J\n', discover(config, device)));
+	code = 0;
+	break;
+}
+case 'configure':
+	if (length(ARGV) != 3) usage();
+	code = configure(ARGV[1], ARGV[2]);
+	break;
+case 'disable':
+	code = disable();
+	break;
+case 'apply-wifi':
+	if (length(ARGV) != 2) usage();
+	code = apply_wifi(ARGV[1]);
+	break;
+case 'apply-timezone':
+	if (length(ARGV) != 3) usage();
+	code = apply_timezone(ARGV[1], ARGV[2]);
+	break;
+case 'sync-neighbors':
+	code = sync_neighbors();
+	break;
+case 'selftest':
+	code = selftest();
+	break;
+default:
+	usage();
+}
+exit(code || 0);

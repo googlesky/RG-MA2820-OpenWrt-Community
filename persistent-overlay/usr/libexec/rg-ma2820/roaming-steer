@@ -5,6 +5,7 @@ set -u
 
 WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
 DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+CLUSTER_ENV=${RG_MA2820_CLUSTER_ENV:-/etc/rg-ma2820/cluster.env}
 PEER_STATE_FILE=${RG_MA2820_PEER_WIFI_STATE:-/var/run/rg-ma2820-peer-wifi.state}
 STATE_DIR=${RG_MA2820_ROAM_STATE_DIR:-/var/run/rg-ma2820-roaming}
 EVENT_FILE=${RG_MA2820_ROAM_EVENTS:-/var/run/rg-ma2820-roaming.events}
@@ -12,11 +13,13 @@ WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
 HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
 HOSTAPD_CTRL=${RG_MA2820_HOSTAPD_CTRL:-/var/run/hostapd}
 PING=${RG_MA2820_PING:-ping}
+CLUSTER_NEIGHBORS=${RG_MA2820_CLUSTER_NEIGHBORS:-/var/run/rg-ma2820-cluster-neighbors.state}
 
 [ -r "$WIFI_ENV" ] || exit 0
 [ -r "$DEVICE_ENV" ] || exit 0
 . "$WIFI_ENV"
 . "$DEVICE_ENV"
+[ ! -r "$CLUSTER_ENV" ] || . "$CLUSTER_ENV"
 
 ROAM_STEERING=${ROAM_STEERING:-1}
 ROAM_BAND_2G=${ROAM_BAND_2G:-0}
@@ -77,7 +80,17 @@ log_event()
 
 peer_ready()
 {
-	local state
+	local state recorded_id updated now
+	if [ "${CLUSTER_ENABLED:-0}" = 1 ]; then
+		[ -s "$CLUSTER_NEIGHBORS" ] || return 1
+		read -r recorded_id < "$CLUSTER_NEIGHBORS" || return 1
+		[ "$recorded_id" = "${CLUSTER_ID:-}" ] || return 1
+		updated=$(stat -c %Y "$CLUSTER_NEIGHBORS") || return 1
+		now=$(date +%s)
+		valid_number "$updated" || return 1
+		[ "$updated" -le "$now" ] && [ $((now - updated)) -le 90 ]
+		return $?
+	fi
 	[ -s "$PEER_STATE_FILE" ] || return 1
 	state="$(cat "$PEER_STATE_FILE" 2>/dev/null)" || return 1
 	[ "$(state_value "$state" PROFILE)" = wired-mesh ] || return 1

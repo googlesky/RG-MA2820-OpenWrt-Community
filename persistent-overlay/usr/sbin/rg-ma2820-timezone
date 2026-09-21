@@ -127,6 +127,11 @@ case "${1:-status}" in
 		[ "$#" -eq 0 ] || [ "$#" -eq 1 ] || fail 'usage: rg-ma2820-timezone status'
 		status_json
 		;;
+	--validate)
+		[ "$#" -eq 3 ] || fail 'usage: rg-ma2820-timezone --validate ZONE AUTO'
+		bool_value "$3" >/dev/null || fail 'automatic must be true or false'
+		resolve_zone "$2" >/dev/null
+		;;
 	--configure)
 		[ "$#" -eq 4 ] || fail 'usage: rg-ma2820-timezone --configure ZONE AUTO local|pair'
 		zone=$2
@@ -153,5 +158,5 @@ case "${1:-status}" in
 		apply_local "$zone" "$automatic"
 		status_json
 		;;
-	*) fail 'usage: rg-ma2820-timezone [status|--configure ZONE AUTO local|pair]' ;;
+	*) fail 'usage: rg-ma2820-timezone [status|--validate ZONE AUTO|--configure ZONE AUTO local|pair]' ;;
 esac

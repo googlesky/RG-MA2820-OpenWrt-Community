@@ -29,7 +29,7 @@ volume_id()
 try_system()
 {
 	local slot="$1"
-	local volid block candidate_id candidate_format
+	local volid block candidate_id candidate_format candidate_compat candidate_autoprovision
 	volid=$(volume_id "$slot")
 	block="/dev/ubiblock0_${volid}"
 
@@ -41,8 +41,15 @@ try_system()
 		"$SYSTEM_MOUNT/etc/rg-ma2820/device.env" 2>/dev/null)
 	candidate_format=$(sed -n "s/^SYSTEM_FORMAT='\([^']*\)'/\1/p" \
 		"$SYSTEM_MOUNT/etc/rg-ma2820/device.env" 2>/dev/null)
+	candidate_compat=$(sed -n "s/^IMAGE_COMPAT='\([^']*\)'/\1/p" \
+		"$SYSTEM_MOUNT/etc/rg-ma2820/device.env" 2>/dev/null)
+	candidate_autoprovision=$(sed -n "s/^COMMUNITY_AUTOPROVISION='\([^']*\)'/\1/p" \
+		"$SYSTEM_MOUNT/etc/rg-ma2820/device.env" 2>/dev/null)
 	. /etc/rg-ma2820/device.env
-	if [ "$candidate_id" != "$DEVICE_ID" ] ||
+	if { [ -n "${IMAGE_COMPAT:-}" ] &&
+		{ [ "$candidate_compat" != "$IMAGE_COMPAT" ] ||
+		  [ "$candidate_autoprovision" != 1 ] || [ "$candidate_id" != auto ]; }; } ||
+		{ [ -z "${IMAGE_COMPAT:-}" ] && [ "$candidate_id" != "$DEVICE_ID" ]; } ||
 		[ "$candidate_format" != "$SYSTEM_FORMAT" ] ||
 		[ ! -x "$SYSTEM_MOUNT/sbin/init" ] ||
 		[ ! -d "$SYSTEM_MOUNT/.bootstrap" ]; then

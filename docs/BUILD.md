@@ -1,4 +1,4 @@
-# Building a pair-specific release
+# Building the generic community release
 
 ## 1. Keep a private backup first
 
@@ -8,7 +8,9 @@ second storage device. Do not put those files in this repository or a public
 issue.
 
 The build needs owner-supplied RGOS material because redistribution is outside
-this project's scope and calibration is device-specific.
+this project's scope. Device calibration is no longer a build input: the
+generic image imports it read-only from each AP's preserved factory `data` MTD
+at first boot.
 
 ## 2. Host dependencies
 
@@ -21,29 +23,72 @@ dropbear-bin ubi-reader
 ```
 
 Package names differ by distribution. `ubi-reader` provides
-`ubireader_extract_images` and `ubireader_extract_files` and may instead be
-installed in a Python virtual environment.
+`ubireader_extract_images` and may instead be installed in a Python virtual
+environment.
 
-## 3. Prepare the stock runtime and volumes
+## 3. One-command owner-side build
+
+The recommended path extracts the owner's raw stock `rootfs` UBI MTD backup,
+builds the pinned OpenWrt userspace if it is not already present, and removes
+all temporary vendor files on exit:
+
+```sh
+./tools/build-community-from-stock.sh r34 /private/output-r34 \
+  /private/mtd0-rootfs.raw
+```
+
+Set `UBIREADER_EXTRACT_IMAGES=/path/to/ubireader_extract_images` if the helper
+is installed in a virtual environment. A prebuilt runtime can be supplied as a
+fourth argument to skip the OpenWrt build.
+
+A matching stock WFI/EWEB file also works as input. The similarly named
+RG-MA2820B R5.2.9 `*.w` available in the research archive has a larger,
+different kernel/filestruct and is **not** compatible with the validated
+RG-MA2820(T) AP_RGOS 11.9(4) layout. The builder refuses it; do not increase
+kernel volume allocation just to silence that error. A raw backup contains
+device-specific material: keep the input private, even though the generated
+community image imports calibration separately at first boot.
+
+The output contains:
+
+- `RG-MA2820T-OpenWrt-Community-r34-web.bin` for initial RGOS conversion;
+- `*-system.squashfs` for routine A/B updates;
+- `*-recovery.squashfs` for exceptional immutable-recovery maintenance;
+- `*.ubi`, `SHA256SUMS`, and a non-secret build manifest.
+
+The build audit fails if either SquashFS contains calibration, SSH host keys,
+authorized keys, fixed device identities, or unresolved templates.
+
+## 4. Manual generic build
+
+For an already built OpenWrt runtime, prepare the stock runtime and volumes as
+follows.
 
 Obtain an RGOS firmware matching the running device. Verify its vendor
 checksum before using it. The helper validates the Broadcom WFI CRC and
-extracts its UBI payload without extracting or rewriting CFEROM:
+extracts its UBI payload without extracting or rewriting CFEROM. If using a
+matching raw UBI backup instead, pass it directly to `ubireader_extract_images`
+and skip this WFI extraction command:
 
 ```sh
 mkdir -p /private/rg-ma2820
 python3 tools/rg-web-image.py extract /private/vendor-firmware.w \
-  --ubi-output /private/rg-ma2820/stock.ubi \
-  --cferom-output /private/rg-ma2820/cferom.bin
+  --ubi-output /private/rg-ma2820/stock.ubi
 
 ubireader_extract_images -o /private/rg-ma2820/volumes \
   /private/rg-ma2820/stock.ubi
-ubireader_extract_files -o /private/rg-ma2820/files \
-  /private/rg-ma2820/stock.ubi
+
+mkdir -p /private/rg-ma2820/vendor-root
+ROOTFS_IMAGE=$(find /private/rg-ma2820/volumes -type f \
+  -name 'img-*_vol-rootfs_ubifs.ubifs' -print)
+[ "$(printf '%s\n' "$ROOTFS_IMAGE" | sed '/^$/d' | wc -l)" -eq 1 ]
+unsquashfs -d /private/rg-ma2820/vendor-root "$ROOTFS_IMAGE"
+STOCK_VOLUME_DIR=${ROOTFS_IMAGE%/*}
 ```
 
-Locate the extracted directory that contains all of these paths and use it as
-`VENDOR_ROOT`:
+The count assertion deliberately stops the instructions unless exactly one
+`rootfs_ubifs` image matched. The unpacked directory must contain all of these
+paths and is used as `VENDOR_ROOT`:
 
 ```text
 lib/modules/4.1.52/extra/wl.ko
@@ -67,7 +112,34 @@ img-*_vol-filestruct_full.bin.ubifs
 Never substitute filestruct or modules from a different model, kernel build,
 or RGOS line merely because their names match.
 
-## 4. Prepare each private state root
+Then run:
+
+```sh
+RUNTIME_ROOT=$PWD/openwrt/build_dir/target-arm_cortex-a7_musl_eabi/root-bcm6755
+UBINIZE=$PWD/openwrt/staging_dir/host/bin/ubinize \
+  ./tools/build-community-release.sh r34 /private/output-r34 \
+  "$RUNTIME_ROOT" /private/rg-ma2820/vendor-root \
+  "$STOCK_VOLUME_DIR"
+```
+
+## 5. Generic-image safety model
+
+The web image rewrites only the system UBI MTD. It does not contain CFEROM and
+does not cover the separate stock `data` MTD. First boot refuses to start the
+normal system health trial unless it can validate and copy a 4–64 KiB
+`.kernel_nvram.setting` with the expected board identifiers and valid unicast
+Ethernet/2.4 GHz/5 GHz MAC addresses.
+
+Each AP generates unique Dropbear keys locally. Never copy `/etc/dropbear`,
+`/etc/rg-ma2820/kernel_nvram.setting`, or a writable overlay between APs.
+
+## Legacy pair-specific builder
+
+The original fixed-pair builder remains for existing installations that must
+produce byte-compatible `ap2`/`ap3` updates. New community installations
+should use the generic builder above.
+
+### Prepare each private state root
 
 Create this layout outside the checkout for each physical AP:
 
@@ -96,7 +168,7 @@ dropbearkey -t ed25519 -f /private/ap2-state/etc/dropbear/dropbear_ed25519_host_
 Do not copy one unit's private keys to the other. The builder extracts the
 Ed25519 public blobs itself and pins both peers.
 
-## 5. Record radio identities with a RAM-only boot
+### Record radio identities with a RAM-only boot
 
 Build OpenWrt first:
 
@@ -136,7 +208,7 @@ python3 tools/mac-add.py "$(cat /sys/class/net/wl1/address)" 1
 Do not infer radio addresses only from the chassis label; allocation differs
 between observed units.
 
-## 6. Create and check the pair profile
+### Create and check the pair profile
 
 Copy `config/pair.example.env` outside the checkout and replace all example
 addresses. The strict parser accepts only known `KEY=value` fields and never
@@ -152,7 +224,7 @@ remains the normal management-address source.
   /private/pair.env /private/ap2-state /private/ap3-state
 ```
 
-## 7. Build
+### Build the fixed pair
 
 ```sh
 RUNTIME_ROOT=$PWD/openwrt/build_dir/target-arm_cortex-a7_musl_eabi/root-bcm6755

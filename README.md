@@ -7,22 +7,27 @@ Community build system and device integration for the Ruijie RG-MA2820(T).
 It combines an OpenWrt userspace with the matching RGOS 4.1.52 kernel and
 Broadcom radio/Ethernet runtime supplied by the device owner.
 
-This is the public, sanitized continuation of release `r33`, which has run on
-two hardware units with wired backhaul, A/B rollback, immutable LAN recovery,
-LuCI, WPA3/WPA2 roaming, and traffic-driven front-panel LEDs.
+The device integration through `r33` has run on two physical units. The
+community profile adds a calibration-safe generic image and a controllerless,
+dynamic N-node wired AP cluster. It is not limited to two APs or to the
+historical `ap2`/`ap3` roles.
 
-## Important: images are device-bound
+## Generic image, unique devices
 
-There is intentionally no universal download-and-flash `.bin`. Each AP has
-calibration NVRAM, radio identities, and SSH host keys that must remain unique.
-The build creates a separate image for each member of a pair from that pair's
-own private inputs. Swapping images between devices can break radio operation
-or duplicate network identities.
+One generated `*-web.bin` can be installed on compatible RG-MA2820(T) units.
+It intentionally contains no calibration, MAC address, serial number, SSH
+host key, or fixed management IP. On first boot, each AP:
 
-The repository contains no RGOS firmware, proprietary Broadcom modules,
-calibration data, passwords, private keys, or flash dumps. Keep those inputs
-outside the checkout and do not publish generated images unless you have
-audited them.
+- mounts the separate stock `data` MTD read-only;
+- validates board `6755` / type `0x08a9` and copies its own radio calibration;
+- derives unique node, hostname, BSSID, and link-local recovery identities;
+- generates new RSA, ECDSA, and Ed25519 Dropbear host keys.
+
+The public repository contains no RGOS firmware, proprietary Broadcom modules,
+calibration data, passwords, private keys, or flash dumps. Build the generic
+image locally from a stock firmware file you are authorized to use; generated
+firmware is ignored by Git and should remain private unless its redistribution
+rights have been established separately.
 
 ## What works
 
@@ -31,43 +36,60 @@ audited them.
 - immutable recovery and two independently updated system slots;
 - full-image NAND readback, mount/read verification, trial boot, and rollback;
 - 2.4 GHz and 5 GHz vendor radios with WPA2/WPA3, 802.11k/v, and 5 GHz 802.11r;
-- coordinated wired-backhaul roaming between two APs;
+- authenticated mDNS discovery and wired-backhaul roaming across a dynamic
+  number of APs;
 - dedicated LuCI wireless/roaming page and a custom operational overview,
-  both showing radios and associated clients across the AP pair;
+  both showing radios and associated clients across all discovered APs;
 - WAN/LAN/Wi-Fi/WPS/Power LED control, including physical-port traffic activity;
 - automatic geographic timezone selection from the managing browser.
 
 This is wired multi-AP roaming, not 802.11s wireless mesh. The client still
 makes the final roaming decision.
 
-## Quick start
+## Quick build
 
 1. Read [the safety and support boundary](docs/ARCHITECTURE.md).
-2. Back up every MTD partition and prepare the private inputs described in
-   [the build guide](docs/BUILD.md).
-3. Clone and build the pinned OpenWrt source:
+2. Back up every MTD partition as described in [the build guide](docs/BUILD.md).
+3. Install the host dependencies, including `squashfs-tools` and
+   `ubi-reader`, then run the owner-side builder with a matching stock UBI
+   backup from your own RG-MA2820(T):
 
    ```sh
    git clone --recurse-submodules \
      https://github.com/googlesky/RG-MA2820-OpenWrt-Community.git
    cd RG-MA2820-OpenWrt-Community
-   ./tools/apply-openwrt-overlay.sh
-   cd openwrt
-   ./scripts/feeds update -a
-   ./scripts/feeds install -a
-   make defconfig
-   make -j"$(nproc)"
+   ./tools/build-community-from-stock.sh r34 ./output-r34 \
+     /private/mtd0-rootfs.raw
    ```
 
-4. Copy `config/pair.example.env` outside the repository, fill it with the
-   identities observed on your APs, and validate it:
+   The script builds the pinned OpenWrt userspace when necessary, extracts the
+   owner-supplied stock runtime in a temporary directory, and emits one generic
+   web image plus A/B update and recovery images with `SHA256SUMS`.
+   A matching stock WFI/EWEB package may be used instead of the UBI backup;
+   firmware for the similarly named RG-MA2820B R5.2.9 is incompatible.
+
+4. Validate the web image before installation:
 
    ```sh
-   ./tools/build-pair-release.sh --check \
-     /private/pair.env /private/ap2-state /private/ap3-state
+   python3 tools/rg-web-image.py inspect \
+     output-r34/RG-MA2820T-OpenWrt-Community-r34-web.bin
    ```
 
-5. Build the pair-specific release as shown in [BUILD.md](docs/BUILD.md).
+5. Read [RECOVERY.md](docs/RECOVERY.md), use the stock upload-check path first,
+   and keep UART plus a verified stock backup available for initial conversion.
+
+## Add any number of APs
+
+Connect every AP to the same trusted Ethernet Layer-2 network/VLAN. Log in with
+`root` / `root`, open **Network → RG-MA2820 Cluster**, and enter the exact same
+cluster name and 12–128 character secret on each node. Nodes are discovered
+dynamically; no member list or IP address is compiled into the firmware.
+
+The shared profile uses wildcard 802.11r key holders, refreshes 802.11k
+neighbors from every authenticated member, and exposes all node/client status
+from any AP. Reapply the Wi-Fi profile to the cluster after joining a new AP.
+See [the multi-AP operating guide](docs/CLUSTER.md) for topology, scaling, and
+security details.
 
 Do a RAM-only UART/TFTP boot before persistent installation. Keep a 3.3 V UART
 adapter connected and a verified stock backup available during first bring-up.
@@ -76,12 +98,11 @@ See [RECOVERY.md](docs/RECOVERY.md).
 ## Project status
 
 The source, deterministic image constructors, and runtime have regression
-coverage. Release `r33` was accepted on two observed hardware units; its A/B
-gate invokes and identity-checks the complete pair-status RPC before accepting
-an update. Community images built from other units remain experimental until
-their owners verify
-the exact board revision, stock kernel/runtime, calibration data, and flash
-geometry.
+coverage. Release `r33` was accepted on two observed hardware units. The new
+generic/N-node profile passes three-node provisioning tests, target-ARM ucode
+tests, complete SquashFS builds, UBI volume/CRC reconstruction, EWEB/WFI CRC
+validation, and private-material scans. It remains a release candidate until
+the generic first-boot path is independently exercised on physical hardware.
 
 Issues and pull requests are welcome. Never attach private flash dumps,
 calibration files, passwords, or device host keys to a public issue.

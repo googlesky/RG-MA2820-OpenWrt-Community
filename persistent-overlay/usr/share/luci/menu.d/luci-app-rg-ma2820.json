@@ -9,5 +9,17 @@
 		"depends": {
 			"acl": [ "luci-app-rg-ma2820" ]
 		}
+	},
+	"admin/network/rg-ma2820-cluster": {
+		"title": "RG-MA2820 Cluster",
+		"order": 17,
+		"action": {
+			"type": "view",
+			"path": "rg-ma2820/cluster"
+		},
+		"depends": {
+			"acl": [ "luci-app-rg-ma2820" ],
+			"fs": [ "/etc/rg-ma2820/community-build" ]
+		}
 	}
 }

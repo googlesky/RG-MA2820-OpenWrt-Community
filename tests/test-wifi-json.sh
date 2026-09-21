@@ -188,4 +188,23 @@ fi
 [ "$(sha256sum "$wifi_env")" = "$before" ]
 [ "$(cat "$restart_count")" = 2 ]
 
+# Generic community identities use the same JSON API and derive stable,
+# distributed scan fallbacks without any AP2/AP3 role.
+cat > "$device_env" <<'EOF'
+DEVICE_ID='node-a1b2c3'
+EOF
+community_payload=$temporary/community.json
+printf '%s' "$open_payload" |
+	jq -c '.channel_2g="auto" | .channel_5g="auto"' > "$community_payload"
+before=$(sha256sum "$wifi_env")
+RG_MA2820_WIFI_ENV=$wifi_env RG_MA2820_DEVICE_ENV=$device_env \
+	RG_MA2820_JSONFILTER=$jsonfilter RG_MA2820_NO_RESTART=1 \
+	sh "$setter" --validate-json-file "$community_payload" >/dev/null
+[ "$(sha256sum "$wifi_env")" = "$before" ]
+RG_MA2820_WIFI_ENV=$wifi_env RG_MA2820_DEVICE_ENV=$device_env \
+	RG_MA2820_JSONFILTER=$jsonfilter RG_MA2820_NO_RESTART=1 \
+	sh "$setter" --configure-json-file "$community_payload" >/dev/null
+grep -Eq "^FALLBACK_CHANNEL_2G='(1|6|11)'$" "$wifi_env"
+grep -Eq "^FALLBACK_CHANNEL_5G='(36|149)'$" "$wifi_env"
+
 echo 'LuCI JSON Wi-Fi profile tests: PASS'

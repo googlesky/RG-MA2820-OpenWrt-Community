@@ -6,8 +6,10 @@ STOP=20
 
 WIFI_ENV=${RG_MA2820_WIFI_ENV:-/etc/rg-ma2820/wifi.env}
 DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
+CLUSTER_ENV=${RG_MA2820_CLUSTER_ENV:-/etc/rg-ma2820/cluster.env}
 . "$WIFI_ENV"
 [ ! -r "$DEVICE_ENV" ] || . "$DEVICE_ENV"
+[ ! -r "$CLUSTER_ENV" ] || . "$CLUSTER_ENV"
 
 HOSTAPD=${RG_MA2820_HOSTAPD:-/opt/bcm/sbin/hostapd}
 HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
@@ -32,6 +34,8 @@ CHANNEL_5G="${CHANNEL_5G:-36}"
 WIDTH_5G="${WIDTH_5G:-80}"
 CENTER_CHANNEL_5G="${CENTER_CHANNEL_5G:-42}"
 MOBILITY_DOMAIN="${MOBILITY_DOMAIN:-4d41}"
+[ "${CLUSTER_ENABLED:-0}" != 1 ] ||
+	MOBILITY_DOMAIN="${CLUSTER_MOBILITY_DOMAIN:-$MOBILITY_DOMAIN}"
 COUNTRY_CODE="${COUNTRY_CODE:-US}"
 SSID_2G="${SSID_2G:-${SSID_BASE:-RG-MA2820-Mesh}}"
 SSID_5G="${SSID_5G:-${SSID_BASE:-RG-MA2820-Mesh}}"
@@ -220,6 +224,10 @@ read_peer_channels()
 	PEER_SELECTED_CHANNEL_2G=
 	PEER_SELECTED_CHANNEL_5G=
 	[ "$WIFI_PROFILE" = wired-mesh ] || return 1
+	# Community clusters deliberately have no single distinguished peer. Each
+	# node performs its own scan; the cluster synchronizer publishes every BSS
+	# as an 802.11k neighbor after discovery.
+	[ "${CLUSTER_ENABLED:-0}" != 1 ] || return 1
 	[ -x "$PEER" ] || return 1
 	wait_for_peer_network || {
 		log "peer network was not ready after ${PEER_NETWORK_WAIT}s"
@@ -358,7 +366,12 @@ emit_security()
 	echo 'rsn_pairwise=CCMP'
 	echo "ieee80211w=$mfp"
 	[ "$fast_transition" = 1 ] || return 0
-	rrb_key="$(printf 'rg-ma2820-ft:%s:%s' "$ssid" "$passphrase" | sha256sum | cut -d ' ' -f 1)"
+	if [ "${CLUSTER_ENABLED:-0}" = 1 ] &&
+		echo "${CLUSTER_RRB_KEY:-}" | grep -Eq '^[0-9a-f]{64}$'; then
+		rrb_key=$CLUSTER_RRB_KEY
+	else
+		rrb_key="$(printf 'rg-ma2820-ft:%s:%s' "$ssid" "$passphrase" | sha256sum | cut -d ' ' -f 1)"
+	fi
 	own_r1kh="$(echo "$local_bssid" | tr -d ':')"
 	echo "mobility_domain=$MOBILITY_DOMAIN"
 	echo "nas_identifier=$nas_identifier"
@@ -367,8 +380,16 @@ emit_security()
 	echo 'ft_psk_generate_local=1'
 	echo 'reassociation_deadline=20000'
 	echo 'pmk_r1_push=1'
-	echo "r0kh=$peer_bssid $peer_nas $rrb_key"
-	echo "r1kh=$peer_bssid $peer_bssid $rrb_key"
+	if [ "${CLUSTER_ENABLED:-0}" = 1 ]; then
+		# hostapd's wildcard key-holder discovery makes 802.11r scale to an
+		# arbitrary number of authenticated wired APs without rebuilding a
+		# pairwise r0kh/r1kh list whenever a node joins.
+		echo "r0kh=ff:ff:ff:ff:ff:ff * $rrb_key"
+		echo "r1kh=00:00:00:00:00:00 00:00:00:00:00:00 $rrb_key"
+	else
+		echo "r0kh=$peer_bssid $peer_nas $rrb_key"
+		echo "r1kh=$peer_bssid $peer_bssid $rrb_key"
+	fi
 }
 
 emit_acl()

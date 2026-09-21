@@ -87,6 +87,13 @@ function formatRate(kbps) {
 }
 
 function wirelessNodes(wireless) {
+	if (wireless?.cluster_nodes?.length)
+		return wireless.cluster_nodes.filter(node => node.available).map(node => ({
+			device_id: node.device_id,
+			hostname: node.hostname || node.device_id,
+			local: !!node.local,
+			radios: node.radios || []
+		}));
 	let nodes = [{
 		device_id: wireless?.device_id || 'local',
 		hostname: wireless?.hostname || _('This AP'),
@@ -198,7 +205,8 @@ function warningText(code) {
 		radio_offline: _('A configured radio or BSS is offline.'),
 		txpower_mismatch: _('A radio did not apply the configured transmit-power policy.'),
 		dfs_channel: _('The selected 5 GHz channel requires DFS/radar handling.'),
-		legacy_schema: _('The saved settings use the legacy schema and will be upgraded on the next apply.')
+		legacy_schema: _('The saved settings use the legacy schema and will be upgraded on the next apply.'),
+		cluster_node_offline: _('One or more cluster nodes failed authenticated status collection.')
 	})[code] || code;
 }
 
@@ -225,7 +233,7 @@ function collectWarnings(system, wireless) {
 		warnings.push({ level: 'error', text: _('The front-panel controller detected a core service, NAND, or thermal fault.') });
 	if ([ 'degraded', 'offline' ].includes(system.leds?.uplink) && system.network?.gateway)
 		warnings.push({ level: 'warning', text: _('The uplink gateway health check is failing.') });
-	if (wireless?.peer_online && wireless?.peer_status && !wireless.peer_status.available)
+	if (!wireless?.cluster && wireless?.peer_online && wireless?.peer_status && !wireless.peer_status.available)
 		warnings.push({ level: 'warning', text: _('The peer AP is online, but its live radio and client snapshot is unavailable.') });
 	if (Number(system.system?.temperature_mc) >= thermalCritical)
 		warnings.push({ level: 'error', text: _('Device temperature is critical: %s °C.').format((system.system.temperature_mc / 1000).toFixed(1)) });
@@ -293,7 +301,7 @@ return view.extend({
 			status.browser_supported = detected === 'UTC' || !!zones[detected];
 			if (!status.automatic || status.initialized || !status.browser_supported)
 				return data;
-			return callConfigureTimezone(detected, true, 'pair').then(result => {
+			return callConfigureTimezone(detected, true, data[1]?.cluster?.enabled ? 'cluster' : 'pair').then(result => {
 				if (!result?.success) {
 					status.sync_error = result?.error || 'timezone_rejected';
 					return data;
@@ -318,12 +326,12 @@ return view.extend({
 		}
 		let zonename = automatic ? detected : valueOr(status?.zonename, 'UTC');
 		poll.stop();
-		return callConfigureTimezone(zonename, automatic, 'pair').then(result => {
+		return callConfigureTimezone(zonename, automatic, this.communityCluster ? 'cluster' : 'pair').then(result => {
 			if (!result?.success)
 				throw new Error(result?.error || _('Timezone update failed'));
 			ui.addNotification(null, E('p', {}, automatic ?
-				_('Timezone synchronized to %s on both APs.').format(zonename) :
-				_('Automatic timezone detection is disabled on both APs.')));
+				_('Timezone synchronized to %s.').format(zonename) :
+				_('Automatic timezone detection is disabled.')));
 		}).catch(error => {
 			ui.addNotification(null, E('p', {}, _('Unable to update timezone: %s').format(error.message || error)), 'error');
 		}).finally(() => poll.start());
@@ -342,8 +350,9 @@ return view.extend({
 			E('div', { class: 'rg-hero-badges' }, [
 				badge(_('Firmware %s').format(valueOr(identity.release)), 'info'),
 				badge(_('Slot %s').format(valueOr(boot.running_slot).toUpperCase()), boot.running_slot === boot.accepted_slot ? 'good' : 'warning'),
-				badge(wireless.mesh_ready ? _('Wired mesh ready') : _('Wired mesh degraded'), wireless.mesh_ready ? 'good' : 'warning'),
-				badge(wireless.peer_online ? _('Peer online') : _('Peer offline'), wireless.peer_online ? 'good' : 'error')
+				badge(wireless.mesh_ready ? _('Wired roaming ready') : _('Wired roaming degraded'), wireless.mesh_ready ? 'good' : 'warning'),
+				wireless.cluster ? badge(_('%d/%d cluster nodes').format(Number(wireless.cluster.online_count || 0), Number(wireless.cluster.node_count || 0)), wireless.cluster.online_count === wireless.cluster.node_count) :
+					badge(wireless.peer_online ? _('Peer online') : _('Peer offline'), wireless.peer_online ? 'good' : 'error')
 			]),
 			E('div', { class: 'rg-actions' }, [
 				E('a', { href: L.url('admin/network/rg-ma2820') }, _('Manage Wi-Fi & mesh')),
@@ -462,13 +471,14 @@ return view.extend({
 			E('span', {}, [ _('%d clients').format(Number(radio.client_count || 0)), E('br'), E('small', { class: 'rg-muted' }, _('TX %s dBm · noise %d dBm').format(valueOr(radio.txpower_dbm), Number(radio.noise_dbm || 0))) ])
 		]));
 		let peer = wireless.peer_status || {};
-		return card(_('Wi-Fi & wired roaming'), _('Live radios on this AP and its Ethernet-backhauled peer'), [
+		let cluster = wireless.cluster;
+		return card(_('Wi-Fi & wired roaming'), cluster ? _('Live radios on every authenticated Ethernet-backhauled cluster node') : _('Live radios on this AP and its Ethernet-backhauled peer'), [
 			E('div', { class: 'rg-service-list', style: 'margin-bottom:10px' }, [
 				badge(wireless.config_synced ? _('Configuration synchronized') : _('Configuration differs'), wireless.config_synced ? 'good' : 'warning'),
-				badge(wireless.channel_plan_ok ? _('Channel plan healthy') : _('Channel plan needs attention'), wireless.channel_plan_ok ? 'good' : 'warning'),
-				badge(wireless.neighbor_synced ? _('Neighbors synchronized') : _('Neighbors not synchronized'), wireless.neighbor_synced ? 'good' : 'warning'),
+				cluster ? badge(_('%d nodes discovered').format(Number(cluster.node_count || 0)), cluster.ready) : badge(wireless.channel_plan_ok ? _('Channel plan healthy') : _('Channel plan needs attention'), wireless.channel_plan_ok ? 'good' : 'warning'),
+				cluster ? badge(cluster.ready ? _('Cluster RPC healthy') : _('Cluster RPC degraded'), cluster.ready) : badge(wireless.neighbor_synced ? _('Neighbors synchronized') : _('Neighbors not synchronized'), wireless.neighbor_synced ? 'good' : 'warning'),
 				badge(wireless.roaming_online ? _('Steering online') : _('Steering offline'), wireless.roaming_online ? 'good' : 'warning'),
-				badge(peer.available ? _('Peer snapshot live') : (wireless.peer_online ? _('Peer snapshot unavailable') : _('Peer offline')), peer.available ? 'good' : (wireless.peer_online ? 'warning' : 'error'))
+				cluster ? badge(cluster.config_synced ? _('Cluster profile synchronized') : _('Cluster profile differs'), cluster.config_synced) : badge(peer.available ? _('Peer snapshot live') : (wireless.peer_online ? _('Peer snapshot unavailable') : _('Peer offline')), peer.available ? 'good' : (wireless.peer_online ? 'warning' : 'error'))
 			]),
 			E('div', { class: 'rg-radio-list' }, radios)
 		], 12);
@@ -488,7 +498,9 @@ return view.extend({
 		]));
 		if (!rows.length)
 			rows.push(E('tr', { class: 'tr' }, E('td', { class: 'td rg-muted', colspan: 7 }, _('No wireless clients are associated.'))));
-		let subtitle = wireless.peer_status?.available
+		let subtitle = wireless.cluster_nodes?.length
+			? _('%d clients across %d APs').format(clients.length, wirelessNodes(wireless).length)
+			: wireless.peer_status?.available
 			? _('%d clients across both APs').format(clients.length)
 			: _('%d local clients · peer station list unavailable').format(clients.length);
 		return card(_('Associated wireless clients'), subtitle, E('div', { class: 'rg-table-wrap' }, E('table', { class: 'table' }, [
@@ -521,6 +533,7 @@ return view.extend({
 	renderDashboard(system, wireless, timezone) {
 		system ||= {};
 		wireless ||= {};
+		this.communityCluster = !!wireless.cluster?.enabled;
 		let warnings = collectWarnings(system, wireless);
 		let alerts = warnings.length ? E('div', { class: 'rg-alerts' }, warnings.map(item => E('div', { class: `rg-alert rg-${item.level}` }, item.text))) : '';
 		return E('div', { class: 'rg-dashboard-root' }, [

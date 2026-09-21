@@ -26,6 +26,7 @@ peer_channel_2g=${14}
 peer_channel_5g=${15}
 source_date_epoch=${SOURCE_DATE_EPOCH:-0}
 release_version=${RG_RELEASE_VERSION:-unknown}
+community_mode=${RG_COMMUNITY_MODE:-0}
 dropbear_hostkey_dir=${DROPBEAR_HOSTKEY_DIR:-}
 rescue_link_local=${RG_RESCUE_LINK_LOCAL:-}
 peer_link_local=${RG_PEER_LINK_LOCAL:-}
@@ -40,11 +41,20 @@ country_code=${RG_COUNTRY_CODE:-}
 # explicit timestamps below, so remove the inherited copy to avoid ambiguity.
 unset SOURCE_DATE_EPOCH
 
-[[ $hostname =~ ^rg-ma2820-ap(2|3)$ ]] || {
-	echo "hostname must be rg-ma2820-ap2 or rg-ma2820-ap3" >&2
-	exit 2
-}
-device_id=${hostname##*-}
+case "$community_mode" in 0|1) ;; *) echo 'RG_COMMUNITY_MODE must be 0 or 1' >&2; exit 2 ;; esac
+if [ "$community_mode" = 1 ]; then
+	[ "$hostname" = rg-ma2820-auto ] || {
+		echo 'community hostname must be rg-ma2820-auto' >&2
+		exit 2
+	}
+	device_id=auto
+else
+	[[ $hostname =~ ^rg-ma2820-ap(2|3)$ ]] || {
+		echo "hostname must be rg-ma2820-ap2 or rg-ma2820-ap3" >&2
+		exit 2
+	}
+	device_id=${hostname##*-}
+fi
 [[ $root_password =~ ^[A-Za-z0-9]{4,63}$ ]] || {
 	echo "root password must be 4-63 ASCII letters or digits" >&2
 	exit 2
@@ -64,28 +74,29 @@ else
 	wifi_security=wpa2
 	wpa_psk=$wifi_secret
 fi
-[[ $channel_2g =~ ^(1|6|11)$ && $peer_channel_2g =~ ^(1|6|11)$ ]] || {
-	echo "2.4 GHz channels must be 1, 6, or 11" >&2
-	exit 2
-}
-[[ $channel_5g =~ ^(36|40|44|48|149|153|157|161)$ && \
-	$peer_channel_5g =~ ^(36|40|44|48|149|153|157|161)$ ]] || {
-	echo "5 GHz channels must be non-DFS 36-48 or 149-161" >&2
-	exit 2
-}
-[[ $peer_bssid_2g =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ && \
-	$peer_bssid_5g =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || {
-	echo "peer BSSIDs must use colon-separated hexadecimal notation" >&2
-	exit 2
-}
 [[ $source_date_epoch =~ ^[0-9]+$ ]] || {
 	echo "SOURCE_DATE_EPOCH must be an unsigned integer" >&2
 	exit 2
 }
-[[ $release_version =~ ^(r[0-9]+|unknown)$ ]] || {
-	echo "RG_RELEASE_VERSION must be an r-number" >&2
+[[ $release_version =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$ ]] || {
+	echo "RG_RELEASE_VERSION must be a short filesystem-safe version" >&2
 	exit 2
 }
+if [ "$community_mode" != 1 ]; then
+	[[ $channel_2g =~ ^(1|6|11)$ && $peer_channel_2g =~ ^(1|6|11)$ ]] || {
+		echo "2.4 GHz channels must be 1, 6, or 11" >&2
+		exit 2
+	}
+	[[ $channel_5g =~ ^(36|40|44|48|149|153|157|161)$ && \
+		$peer_channel_5g =~ ^(36|40|44|48|149|153|157|161)$ ]] || {
+		echo "5 GHz channels must be non-DFS 36-48 or 149-161" >&2
+		exit 2
+	}
+	[[ $peer_bssid_2g =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ && \
+		$peer_bssid_5g =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]] || {
+		echo "peer BSSIDs must use colon-separated hexadecimal notation" >&2
+		exit 2
+	}
 case "$device_id" in
 	ap2)
 		peer_id=ap3; peer_hostname=rg-ma2820-ap3
@@ -98,6 +109,19 @@ case "$device_id" in
 esac
 peer_bssid_2g_device=${peer_bssid_2g,,}
 peer_bssid_5g_device=${peer_bssid_5g,,}
+else
+	rescue_link_local=169.254.254.1
+	peer_link_local=
+	peer_id=
+	peer_hostname=
+	local_bssid_2g=00:00:00:00:00:00
+	local_bssid_5g=00:00:00:00:00:00
+	local_bssid_5g_legacy=00:00:00:00:00:00
+	peer_bssid_2g_device=00:00:00:00:00:00
+	peer_bssid_5g_device=00:00:00:00:00:00
+	peer_bssid_5g_legacy=00:00:00:00:00:00
+	country_code=US
+fi
 
 valid_link_local() {
 	local address=$1 third fourth
@@ -111,6 +135,7 @@ valid_mac() {
 	[[ $1 =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]
 }
 
+if [ "$community_mode" != 1 ]; then
 valid_link_local "$rescue_link_local" &&
 	valid_link_local "$peer_link_local" &&
 	[ "$rescue_link_local" != "$peer_link_local" ] || {
@@ -135,6 +160,7 @@ done
 	exit 2
 }
 [[ $country_code = \#* ]] || country_code=${country_code^^}
+fi
 [ "$system_output" != "$recovery_output" ] || {
 	echo "system and recovery output paths must differ" >&2
 	exit 2
@@ -145,17 +171,19 @@ for output in "$system_output" "$recovery_output"; do
 		exit 1
 	}
 done
-[ -n "$dropbear_hostkey_dir" ] || {
-	echo "DROPBEAR_HOSTKEY_DIR must name a directory with pre-generated per-device host keys" >&2
-	exit 2
-}
-dropbear_hostkey_dir=$(realpath "$dropbear_hostkey_dir")
-for hostkey in rsa ecdsa ed25519; do
-	[ -s "$dropbear_hostkey_dir/dropbear_${hostkey}_host_key" ] || {
-		echo "missing Dropbear $hostkey host key in $dropbear_hostkey_dir" >&2
+if [ "$community_mode" != 1 ]; then
+	[ -n "$dropbear_hostkey_dir" ] || {
+		echo "DROPBEAR_HOSTKEY_DIR must name a directory with pre-generated per-device host keys" >&2
 		exit 2
 	}
-done
+	dropbear_hostkey_dir=$(realpath "$dropbear_hostkey_dir")
+	for hostkey in rsa ecdsa ed25519; do
+		[ -s "$dropbear_hostkey_dir/dropbear_${hostkey}_host_key" ] || {
+			echo "missing Dropbear $hostkey host key in $dropbear_hostkey_dir" >&2
+			exit 2
+		}
+	done
+fi
 for runtime_file in sbin/init sbin/rpcd usr/sbin/uhttpd www/cgi-bin/luci \
 	usr/share/luci/menu.d/luci-mod-network.json \
 	usr/share/rpcd/acl.d/luci-mod-network.json; do
@@ -170,14 +198,17 @@ for vendor_file in lib/modules/4.1.52/extra/wl.ko usr/sbin/hostapd usr/sbin/wl; 
 		exit 1
 	}
 done
-[ -s "$kernel_nvram" ] || {
-	echo "backed-up kernel NVRAM file is missing or empty: $kernel_nvram" >&2
-	exit 1
-}
+if [ "$community_mode" != 1 ]; then
+	[ -s "$kernel_nvram" ] || {
+		echo "backed-up kernel NVRAM file is missing or empty: $kernel_nvram" >&2
+		exit 1
+	}
+fi
 
 project_dir=$(cd "$(dirname "$0")/.." && pwd)
 hybrid_overlay="$project_dir/hybrid-overlay"
 persistent_overlay="$project_dir/persistent-overlay"
+community_overlay="$project_dir/community-overlay"
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/rg-ma2820-persistent.XXXXXXXX")
 trap 'rm -rf -- "$work_dir"' EXIT
 system_root="$work_dir/system"
@@ -199,6 +230,13 @@ rsync -a "$vendor_rootfs/lib/modules/4.1.52" \
 	"$system_root/lib/modules/"
 rsync -a "$hybrid_overlay/" "$system_root/"
 rsync -a "$persistent_overlay/" "$system_root/"
+if [ "$community_mode" = 1 ]; then
+	[ -d "$community_overlay" ] || {
+		echo "community overlay is missing: $community_overlay" >&2
+		exit 1
+	}
+	rsync -a "$community_overlay/" "$system_root/"
+fi
 "$project_dir/tools/build-led-traffic.sh" \
 	"$system_root/usr/libexec/rg-ma2820/led-traffic"
 # The retained vendor kernel opens /data/.restoredefault_flag directly when
@@ -221,56 +259,64 @@ for utility in hostapd hostapd_cli nvram wl; do
 	fi
 done
 
-install -D -m 0600 "$kernel_nvram" \
-	"$system_root/etc/rg-ma2820/kernel_nvram.setting"
+if [ "$community_mode" != 1 ]; then
+	install -D -m 0600 "$kernel_nvram" \
+		"$system_root/etc/rg-ma2820/kernel_nvram.setting"
+else
+	rm -f "$system_root/etc/rg-ma2820/kernel_nvram.setting"
+fi
 printf '%s\n' "$release_version" > "$system_root/etc/rg-ma2820/release"
 
 defaults="$system_root/etc/uci-defaults/99-rg-ma2820-recovery"
 sed -i -e "s/@HOSTNAME@/$hostname/g" "$defaults"
 
 device_env="$system_root/etc/rg-ma2820/device.env"
-sed -i \
-	-e "s/@DEVICE_ID@/$device_id/g" \
-	-e "s/@HOSTNAME@/$hostname/g" \
-	-e "s/@RESCUE_LINK_LOCAL@/$rescue_link_local/g" \
-	-e "s/@PEER_ID@/$peer_id/g" \
-	-e "s/@PEER_HOSTNAME@/$peer_hostname/g" \
-	-e "s/@PEER_LINK_LOCAL@/$peer_link_local/g" \
-	-e "s/@LOCAL_BSSID_2G@/$local_bssid_2g/g" \
-	-e "s/@LOCAL_BSSID_5G@/$local_bssid_5g/g" \
-	-e "s/@LOCAL_BSSID_5G_LEGACY@/$local_bssid_5g_legacy/g" \
-	-e "s/@PEER_BSSID_2G_DEVICE@/$peer_bssid_2g_device/g" \
-	-e "s/@PEER_BSSID_5G_DEVICE@/$peer_bssid_5g_device/g" \
-	-e "s/@PEER_BSSID_5G_LEGACY@/$peer_bssid_5g_legacy/g" \
-	"$device_env"
+if [ "$community_mode" != 1 ]; then
+	sed -i \
+		-e "s/@DEVICE_ID@/$device_id/g" \
+		-e "s/@HOSTNAME@/$hostname/g" \
+		-e "s/@RESCUE_LINK_LOCAL@/$rescue_link_local/g" \
+		-e "s/@PEER_ID@/$peer_id/g" \
+		-e "s/@PEER_HOSTNAME@/$peer_hostname/g" \
+		-e "s/@PEER_LINK_LOCAL@/$peer_link_local/g" \
+		-e "s/@LOCAL_BSSID_2G@/$local_bssid_2g/g" \
+		-e "s/@LOCAL_BSSID_5G@/$local_bssid_5g/g" \
+		-e "s/@LOCAL_BSSID_5G_LEGACY@/$local_bssid_5g_legacy/g" \
+		-e "s/@PEER_BSSID_2G_DEVICE@/$peer_bssid_2g_device/g" \
+		-e "s/@PEER_BSSID_5G_DEVICE@/$peer_bssid_5g_device/g" \
+		-e "s/@PEER_BSSID_5G_LEGACY@/$peer_bssid_5g_legacy/g" \
+		"$device_env"
+fi
 
 wifi_env="$system_root/etc/rg-ma2820/wifi.env"
-case "$channel_5g" in
-	36|40|44|48) center_channel_5g=42 ;;
-	149|153|157|161) center_channel_5g=155 ;;
-esac
-case "$peer_channel_5g" in
-	36|40|44|48) peer_center_channel_5g=42 ;;
-	149|153|157|161) peer_center_channel_5g=155 ;;
-esac
-peer_op_class_5g=128
-roam_ssid_hex=$(printf %s "$roam_ssid" | od -An -tx1 | tr -d ' \n')
-sed -i \
-	-e "s/@ROAM_SSID@/$roam_ssid/g" \
-	-e "s/@ROAM_SSID_HEX@/$roam_ssid_hex/g" \
-	-e "s/@WIFI_SECURITY@/$wifi_security/g" \
-	-e "s/@WPA_PSK@/$wpa_psk/g" \
-	-e "s/@COUNTRY_CODE@/$country_code/g" \
-	-e "s/@CHANNEL_2G@/$channel_2g/g" \
-	-e "s/@CHANNEL_5G@/$channel_5g/g" \
-	-e "s/@CENTER_CHANNEL_5G@/$center_channel_5g/g" \
-	-e "s/@PEER_BSSID_2G@/${peer_bssid_2g,,}/g" \
-	-e "s/@PEER_BSSID_5G@/${peer_bssid_5g,,}/g" \
-	-e "s/@PEER_CHANNEL_2G@/$peer_channel_2g/g" \
-	-e "s/@PEER_CHANNEL_5G@/$peer_channel_5g/g" \
-	-e "s/@PEER_CENTER_CHANNEL_5G@/$peer_center_channel_5g/g" \
-	-e "s/@PEER_OP_CLASS_5G@/$peer_op_class_5g/g" \
-	"$wifi_env"
+if [ "$community_mode" != 1 ]; then
+	case "$channel_5g" in
+		36|40|44|48) center_channel_5g=42 ;;
+		149|153|157|161) center_channel_5g=155 ;;
+	esac
+	case "$peer_channel_5g" in
+		36|40|44|48) peer_center_channel_5g=42 ;;
+		149|153|157|161) peer_center_channel_5g=155 ;;
+	esac
+	peer_op_class_5g=128
+	roam_ssid_hex=$(printf %s "$roam_ssid" | od -An -tx1 | tr -d ' \n')
+	sed -i \
+		-e "s/@ROAM_SSID@/$roam_ssid/g" \
+		-e "s/@ROAM_SSID_HEX@/$roam_ssid_hex/g" \
+		-e "s/@WIFI_SECURITY@/$wifi_security/g" \
+		-e "s/@WPA_PSK@/$wpa_psk/g" \
+		-e "s/@COUNTRY_CODE@/$country_code/g" \
+		-e "s/@CHANNEL_2G@/$channel_2g/g" \
+		-e "s/@CHANNEL_5G@/$channel_5g/g" \
+		-e "s/@CENTER_CHANNEL_5G@/$center_channel_5g/g" \
+		-e "s/@PEER_BSSID_2G@/${peer_bssid_2g,,}/g" \
+		-e "s/@PEER_BSSID_5G@/${peer_bssid_5g,,}/g" \
+		-e "s/@PEER_CHANNEL_2G@/$peer_channel_2g/g" \
+		-e "s/@PEER_CHANNEL_5G@/$peer_channel_5g/g" \
+		-e "s/@PEER_CENTER_CHANNEL_5G@/$peer_center_channel_5g/g" \
+		-e "s/@PEER_OP_CLASS_5G@/$peer_op_class_5g/g" \
+		"$wifi_env"
+fi
 
 # The deterministic salt keeps otherwise identical rebuilds byte-for-byte.
 password_hash=$(openssl passwd -6 -salt "rgma2820${device_id}" \
@@ -284,25 +330,33 @@ sed -i \
 	-e "s/@FACTORY_COUNTRY_CODE@/$country_code/g" \
 	"$device_env"
 
-# First-boot key generation can block indefinitely on this headless platform.
-# Embed the already generated unique keys belonging to this AP.
 mkdir -p "$system_root/etc/dropbear" "$system_root/root/.ssh"
-for hostkey in rsa ecdsa ed25519; do
-	install -m 0600 \
-		"$dropbear_hostkey_dir/dropbear_${hostkey}_host_key" \
-		"$system_root/etc/dropbear/dropbear_${hostkey}_host_key"
-done
-printf '%s\n' \
-	"ssh-ed25519 $ap2_public_key rg-ma2820-ap2-peer-rescue" \
-	"ssh-ed25519 $ap3_public_key rg-ma2820-ap3-peer-rescue" \
-	> "$system_root/etc/dropbear/authorized_keys"
-printf '%s\n' \
-	"$ap2_link_local ssh-ed25519 $ap2_public_key" \
-	"$ap3_link_local ssh-ed25519 $ap3_public_key" \
-	> "$system_root/root/.ssh/known_hosts"
-chmod 0600 "$system_root/etc/dropbear/authorized_keys"
-chmod 0700 "$system_root/root/.ssh"
-chmod 0600 "$system_root/root/.ssh/known_hosts"
+if [ "$community_mode" != 1 ]; then
+	# Pair images retain their pre-generated per-device trust material.
+	for hostkey in rsa ecdsa ed25519; do
+		install -m 0600 \
+			"$dropbear_hostkey_dir/dropbear_${hostkey}_host_key" \
+			"$system_root/etc/dropbear/dropbear_${hostkey}_host_key"
+	done
+	printf '%s\n' \
+		"ssh-ed25519 $ap2_public_key rg-ma2820-ap2-peer-rescue" \
+		"ssh-ed25519 $ap3_public_key rg-ma2820-ap3-peer-rescue" \
+		> "$system_root/etc/dropbear/authorized_keys"
+	printf '%s\n' \
+		"$ap2_link_local ssh-ed25519 $ap2_public_key" \
+		"$ap3_link_local ssh-ed25519 $ap3_public_key" \
+		> "$system_root/root/.ssh/known_hosts"
+	chmod 0600 "$system_root/etc/dropbear/authorized_keys"
+	chmod 0700 "$system_root/root/.ssh"
+	chmod 0600 "$system_root/root/.ssh/known_hosts"
+else
+	# A public image must not clone an identity onto every unit. S07 provision
+	# creates unique host keys after validating this AP's preserved factory MTD.
+	rm -f "$system_root"/etc/dropbear/dropbear_*_host_key \
+		"$system_root/etc/dropbear/authorized_keys" \
+		"$system_root/root/.ssh/known_hosts"
+	chmod 0700 "$system_root/root/.ssh"
+fi
 
 chmod 0755 \
 	"$system_root/etc/init.d/bcm6755-vendor-drivers" \
@@ -336,6 +390,18 @@ chmod 0755 \
 	"$system_root/usr/sbin/rg-ma2820-recovery-upgrade" \
 	"$system_root/usr/sbin/rg-ma2820-system-upgrade" \
 	"$defaults"
+if [ "$community_mode" = 1 ]; then
+	chmod 0755 \
+		"$system_root/etc/init.d/rg-ma2820-provision" \
+		"$system_root/etc/init.d/rg-ma2820-cluster-sync" \
+		"$system_root/usr/libexec/rg-ma2820/cluster-sync-loop" \
+		"$system_root/usr/sbin/rg-ma2820-cluster" \
+		"$system_root/www/cgi-bin/rg-ma2820-cluster"
+	chmod 0600 "$system_root/etc/rg-ma2820/cluster.env"
+	chmod 0644 "$system_root/etc/rg-ma2820/community-build" \
+		"$system_root/usr/share/ucode/rg-ma2820/cluster.uc" \
+		"$system_root/www/luci-static/resources/view/rg-ma2820/cluster.js"
+fi
 chmod 0600 "$device_env" "$wifi_env"
 
 # Keep an authoritative service copy outside /etc. A retained writable
@@ -356,6 +422,10 @@ install -D -m 0600 \
 mkdir -p "$system_root/etc/rc.d" "$system_root/.bootstrap"
 ln -sfn ../init.d/bcm6755-vendor-drivers \
 	"$system_root/etc/rc.d/S08bcm6755-vendor-drivers"
+if [ "$community_mode" = 1 ]; then
+	ln -sfn ../init.d/rg-ma2820-provision \
+		"$system_root/etc/rc.d/S07rg-ma2820-provision"
+fi
 ln -sfn ../init.d/rg-ma2820-network-layout \
 	"$system_root/etc/rc.d/S19rg-ma2820-network-layout"
 ln -sfn ../init.d/rg-ma2820-reset-watch \
@@ -364,8 +434,14 @@ ln -sfn ../init.d/rg-ma2820-management \
 	"$system_root/etc/rc.d/S25rg-ma2820-management"
 ln -sfn ../init.d/rg-ma2820-wifi \
 	"$system_root/etc/rc.d/S60rg-ma2820-wifi"
-ln -sfn ../init.d/rg-ma2820-neighbor-sync \
-	"$system_root/etc/rc.d/S65rg-ma2820-neighbor-sync"
+if [ "$community_mode" = 1 ]; then
+	rm -f "$system_root/etc/rc.d/S65rg-ma2820-neighbor-sync"
+	ln -sfn ../init.d/rg-ma2820-cluster-sync \
+		"$system_root/etc/rc.d/S85rg-ma2820-cluster-sync"
+else
+	ln -sfn ../init.d/rg-ma2820-neighbor-sync \
+		"$system_root/etc/rc.d/S65rg-ma2820-neighbor-sync"
+fi
 ln -sfn ../init.d/rg-ma2820-leds \
 	"$system_root/etc/rc.d/S66rg-ma2820-leds"
 ln -sfn ../init.d/rg-ma2820-roaming \
@@ -402,9 +478,10 @@ mkdir -p "$recovery_root/mnt/system"
 mv "$recovery_root/sbin/init" "$recovery_root/sbin/init.openwrt"
 install -m 0755 "$recovery_root/sbin/rg-ma2820-bootstrap-init" \
 	"$recovery_root/sbin/init"
-unlink "$recovery_root/etc/rc.d/S60rg-ma2820-wifi"
-unlink "$recovery_root/etc/rc.d/S65rg-ma2820-neighbor-sync"
-unlink "$recovery_root/etc/rc.d/S67rg-ma2820-roaming"
+rm -f "$recovery_root/etc/rc.d/S60rg-ma2820-wifi" \
+	"$recovery_root/etc/rc.d/S65rg-ma2820-neighbor-sync" \
+	"$recovery_root/etc/rc.d/S67rg-ma2820-roaming" \
+	"$recovery_root/etc/rc.d/S85rg-ma2820-cluster-sync"
 rm -rf -- "$recovery_root/opt/bcm"
 find "$recovery_root/lib/modules/4.1.52" -type f \
 	\( -name 'wl*.ko' -o -name 'dhd*.ko' -o -name 'hnd*.ko' \

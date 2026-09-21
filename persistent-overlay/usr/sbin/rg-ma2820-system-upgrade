@@ -115,7 +115,17 @@ candidate_id=$(sed -n "s/^DEVICE_ID='\([^']*\)'/\1/p" \
 	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
 candidate_format=$(sed -n "s/^SYSTEM_FORMAT='\([^']*\)'/\1/p" \
 	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
-[ "$candidate_id" = "$DEVICE_ID" ] || die "image belongs to $candidate_id, not $DEVICE_ID"
+candidate_compat=$(sed -n "s/^IMAGE_COMPAT='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+candidate_autoprovision=$(sed -n "s/^COMMUNITY_AUTOPROVISION='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+if [ -n "${IMAGE_COMPAT:-}" ]; then
+	[ "$candidate_compat" = "$IMAGE_COMPAT" ] &&
+		[ "$candidate_autoprovision" = 1 ] && [ "$candidate_id" = auto ] ||
+		die "image compatibility is ${candidate_compat:-missing}, expected $IMAGE_COMPAT"
+else
+	[ "$candidate_id" = "$DEVICE_ID" ] || die "image belongs to $candidate_id, not $DEVICE_ID"
+fi
 [ "$candidate_format" = "$SYSTEM_FORMAT" ] || die 'unsupported system-image format'
 [ -x "$MOUNTPOINT/sbin/init" ] || die 'staged image has no executable init'
 [ -d "$MOUNTPOINT/.bootstrap" ] || die 'staged image lacks the bootstrap pivot directory'

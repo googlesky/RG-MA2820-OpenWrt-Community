@@ -117,7 +117,7 @@ function normalizeFormData(config) {
 	for (const field of CONFIG_PARAMS)
 		if (normalized[field] == null)
 			normalized[field] = '';
-	normalized.scope = 'pair';
+	normalized.scope = [ 'local', 'pair', 'cluster' ].includes(normalized.scope) ? normalized.scope : 'local';
 	normalized.password_2g = '';
 	normalized.password_5g = '';
 	normalized.password_5g_legacy = '';
@@ -296,32 +296,42 @@ return view.extend({
 			radio_offline: _('A configured radio or BSS is offline.'),
 			txpower_mismatch: _('A radio did not apply the configured transmit-power policy.'),
 			dfs_channel: _('The selected 5 GHz channel requires DFS/radar handling.'),
-			legacy_schema: _('The saved settings use the legacy schema and will be upgraded on the next apply.')
+			legacy_schema: _('The saved settings use the legacy schema and will be upgraded on the next apply.'),
+			cluster_node_offline: _('One or more discovered cluster nodes did not return an authenticated live snapshot.')
 		};
 		let slot = _('running %s · accepted %s').format(valueOr(data.running_slot), valueOr(data.accepted_slot));
 		if (data.trial_slot && data.trial_slot !== 'none') slot += ' · ' + _('trial %s').format(data.trial_slot);
 		if (data.pending_slot && data.pending_slot !== 'none') slot += ' · ' + _('pending %s').format(data.pending_slot);
-		let summary = E('div', { class: `alert-message ${data.mesh_ready ? 'success' : 'warning'}` },
-			_('%s · firmware %s · %s · wired roaming %s · peer %s %s · channels local %s/%s, peer %s/%s').format(
+		let summaryText = data.cluster?.enabled ?
+			_('%s · firmware %s · %s · cluster %s · %d/%d nodes online · roaming %s').format(
+				data.hostname, valueOr(data.release), slot, valueOr(data.cluster.name),
+				Number(data.cluster.online_count || 0), Number(data.cluster.node_count || 0),
+				data.mesh_ready ? _('READY') : _('DEGRADED')) :
+			_('%s · firmware %s · %s · standalone roaming %s · local channels %s/%s').format(
 				data.hostname, valueOr(data.release), slot, data.mesh_ready ? _('READY') : _('DEGRADED'),
-				data.peer_id, data.peer_online ? _('online') : _('offline'),
-				valueOr(data.radios?.[0]?.channel), valueOr(data.radios?.[1]?.channel),
-				valueOr(data.peer_channel_2g), valueOr(data.peer_channel_5g)));
+				valueOr(data.radios?.[0]?.channel), valueOr(data.radios?.[1]?.channel));
+		let summary = E('div', { class: `alert-message ${data.mesh_ready ? 'success' : 'warning'}` }, summaryText);
 		let warningNodes = (data.warnings || []).map(code => E('div', {
 			class: `alert-message ${[ 'recovery_mode', 'dfs_channel', 'legacy_schema' ].includes(code) ? 'notice' : 'warning'}`
 		}, warnings[code] || code));
-		let radios = (data.radios || []).map(radio =>
-			this.renderRadioStatus(radio, _('This AP: %s').format(data.hostname), false));
-		let peer = data.peer_status || {};
-		let peerRadios = peer.available
-			? (peer.radios || []).map(radio => this.renderRadioStatus(
-				radio, _('Peer AP: %s').format(peer.hostname || peer.device_id), true))
-			: [ E('div', { class: `alert-message ${data.peer_online ? 'warning' : 'notice'}` },
-				data.peer_online
-					? _('The peer AP is online, but its live radio and client snapshot is unavailable.')
-					: _('Peer radio and client details will appear here when the peer is online.')) ];
+		let clusterNodes = data.cluster_nodes?.length ? data.cluster_nodes : [ {
+			hostname: data.hostname, device_id: data.device_id, local: true,
+			available: true, radios: data.radios || []
+		} ];
+		let radios = [];
+		for (const node of clusterNodes) {
+			if (!node.available) {
+				radios.push(E('div', { class: 'alert-message warning' },
+					_('Node %s is discovered but its authenticated status is unavailable.').format(node.hostname || node.device_id)));
+				continue;
+			}
+			for (const radio of (node.radios || []))
+				radios.push(this.renderRadioStatus(radio,
+					node.local ? _('This AP: %s').format(node.hostname) : _('Cluster AP: %s').format(node.hostname || node.device_id),
+					!node.local));
+		}
 		let events = data.events?.length ? data.events.join('\n') : _('No steering events have been recorded.');
-		return E('div', {}, [ summary, ...warningNodes, ...radios, ...peerRadios,
+		return E('div', {}, [ summary, ...warningNodes, ...radios,
 			data.recovery ? '' : E('div', { class: 'cbi-section' }, [
 				E('h3', {}, _('Recent roaming events')),
 				E('pre', { style: 'white-space:pre-wrap;max-height:18em;overflow:auto' }, events)
@@ -414,7 +424,7 @@ return view.extend({
 		this.formData = normalizeFormData(status.config);
 		let m = this.map = new form.JSONMap(this.formData,
 			_('Wi-Fi and wired roaming configuration'),
-			_('This page drives the Broadcom vendor stack directly because these radios are not managed by mac80211/netifd. Save & Apply validates the entire profile before either AP is changed.'));
+			_('This page drives the Broadcom vendor stack directly because these radios are not managed by mac80211/netifd. Save & Apply validates the complete profile before changing the selected AP scope.'));
 		m.readonly = !!status.recovery || !L.hasViewPermission();
 		let s = m.section(form.NamedSection, 'settings', 'settings');
 		s.anonymous = true;
@@ -426,8 +436,10 @@ return view.extend({
 		let o;
 
 		o = s.taboption('general', form.ListValue, 'scope', _('Apply target'),
-			_('Pair mode updates the peer first over pinned-key SSH, then this AP. Manual channels require local mode so the APs are not assigned the same channel.'));
-		o.value('pair', _('Both wired APs (recommended)'));
+			status.cluster?.enabled ? _('Cluster mode authenticates every discovered wired AP with the shared cluster key, validates all nodes, then applies the profile.') :
+			_('Pair mode updates the peer first over pinned-key SSH, then this AP.'));
+		if (status.cluster?.enabled) o.value('cluster', _('All authenticated cluster APs (recommended)'));
+		else if (!status.cluster) o.value('pair', _('Both wired APs (recommended)'));
 		o.value('local', _('This AP only'));
 		o.rmempty = false;
 
@@ -467,8 +479,8 @@ return view.extend({
 		o = s.taboption('radio2', form.ListValue, 'channel_2g', _('Channel'));
 		o.value('auto', _('Automatic (peer-aware 1/6/11)'));
 		for (const channel of (capabilities.radios?.find(r => r.band === '2g')?.channels || [1, 6, 11])) o.value(String(channel));
-		o.validate = (sid, value) => s.formvalue(sid, 'scope') !== 'pair' || value === 'auto' ||
-			_('Pair mode requires automatic channels; use local mode for a manual channel plan.');
+		o.validate = (sid, value) => s.formvalue(sid, 'scope') === 'local' || value === 'auto' ||
+			_('Multi-AP mode requires automatic channels; use local mode for a manual channel plan.');
 		o.rmempty = false; o.depends('radio_2g_enabled', '1');
 		o = s.taboption('radio2', form.Value, 'txpower_2g', _('Transmit power (dBm)'));
 		o.value('auto', _('Automatic')); o.validate = validateTxPower; o.rmempty = false; o.depends('radio_2g_enabled', '1');
@@ -521,8 +533,8 @@ return view.extend({
 		o.value('auto', _('Automatic (peer-aware non-DFS blocks)'));
 		for (const channel of (capabilities.radios?.find(r => r.band === '5g')?.channels || [36, 149])) o.value(String(channel));
 		o.validate = (sid, value) => {
-			if (s.formvalue(sid, 'scope') === 'pair' && value !== 'auto')
-				return _('Pair mode requires automatic channels; use local mode for a manual channel plan.');
+			if (s.formvalue(sid, 'scope') !== 'local' && value !== 'auto')
+				return _('Multi-AP mode requires automatic channels; use local mode for a manual channel plan.');
 			return valid5GHzCombination(value, s.formvalue(sid, 'width_5g')) ||
 				_('The selected channel is not valid at this 5 GHz width.');
 		};
@@ -540,7 +552,7 @@ return view.extend({
 
 		o = s.taboption('roaming', form.Flag, 'ieee80211k', _('802.11k neighbor reports'));
 		o = s.taboption('roaming', form.Flag, 'ieee80211v', _('802.11v BSS transition'));
-		o = s.taboption('roaming', form.Value, 'mobility_domain', _('802.11r mobility domain'), _('Exactly four hexadecimal digits, shared by both APs.'));
+		o = s.taboption('roaming', form.Value, 'mobility_domain', _('802.11r mobility domain'), _('Exactly four hexadecimal digits, shared by every AP. Cluster mode derives this automatically from the cluster key.'));
 		o.validate = (sid, value) => /^[0-9a-f]{4}$/i.test(value) || _('Enter exactly four hexadecimal digits.'); o.rmempty = false;
 		o = s.taboption('roaming', form.Flag, 'ft_over_ds', _('802.11r over the distribution system'), _('Disabled uses over-the-air FT, which has broader client interoperability.'));
 		o = s.taboption('roaming', form.Flag, 'roam_steering', _('Active RSSI steering'), _('Clients still make the final roaming decision; this controller sends standards-based 802.11v requests.'));
@@ -602,7 +614,7 @@ return view.extend({
 		return map.render().then(formNode => E('div', {}, [
 			E('h2', {}, _('RG-MA2820 Wi-Fi & wired roaming')),
 			E('div', { class: 'cbi-map-descr' },
-				_('Ethernet is the backhaul. 802.11k/v and optional 802.11r help compatible clients move between the two BSS sets; the client always decides when to roam.')),
+				_('Ethernet is the backhaul. 802.11k/v and optional 802.11r help compatible clients move among every cluster AP; the client always makes the final roaming decision.')),
 			E('div', { id: 'rg-ma2820-live-status' }, this.renderStatus(status)),
 			formNode,
 			status.recovery ? '' : E('div', { class: 'cbi-section' }, [
@@ -630,8 +642,8 @@ return view.extend({
 				return config[field] == null ? '' : String(config[field]);
 			});
 			ui.showModal(_('Applying Wi-Fi configuration'), [
-				E('p', { class: 'spinning' }, config.scope === 'pair' ?
-					_('Validating and applying the profile to both wired APs…') :
+				E('p', { class: 'spinning' }, config.scope !== 'local' ?
+					_('Validating and applying the profile to every selected wired AP…') :
 					_('Validating and applying the profile to this AP…'))
 			]);
 			return callConfigure(...args).then(result => {

@@ -16,7 +16,10 @@ usage:
   rg-ma2820-set-wifi SSID [WPA2_PASSPHRASE|--open]
   rg-ma2820-set-wifi --wired-mesh SSID_2G SSID_5G SSID_5G_LEGACY PASSPHRASE [ROOT_PASSWORD]
   rg-ma2820-set-wifi --configure-owner SSID_2G SSID_5G SSID_5G_LEGACY PASSPHRASE_OR_--keep TXPOWER_2G TXPOWER_5G ROAM_RSSI HARD_RSSI HARD_FALLBACK
+  rg-ma2820-set-wifi --validate-json JSON_OBJECT
   rg-ma2820-set-wifi --configure-json JSON_OBJECT
+  rg-ma2820-set-wifi --validate-json-file FILE
+  rg-ma2820-set-wifi --configure-json-file FILE
   rg-ma2820-set-wifi --install-staged FILE
 
 The JSON interface is used by LuCI. It validates the complete candidate before
@@ -235,11 +238,31 @@ load_current_defaults()
 
 set_device_fallbacks()
 {
+	local checksum index
 	case "$DEVICE_ID" in
 		ap2) FALLBACK_CHANNEL_2G=1; FALLBACK_CHANNEL_5G=36 ;;
 		ap3) FALLBACK_CHANNEL_2G=11; FALLBACK_CHANNEL_5G=149 ;;
+		node-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+			# The scan remains authoritative. Spread cold-boot fallbacks so an
+			# arbitrary-size cluster does not collapse onto one channel when a
+			# scan temporarily fails.
+			checksum=$(printf %s "$DEVICE_ID" | cksum | awk '{print $1}')
+			index=$((checksum % 3))
+			case "$index" in 0) FALLBACK_CHANNEL_2G=1 ;; 1) FALLBACK_CHANNEL_2G=6 ;; *) FALLBACK_CHANNEL_2G=11 ;; esac
+			index=$((checksum % 2))
+			[ "$index" = 0 ] && FALLBACK_CHANNEL_5G=36 || FALLBACK_CHANNEL_5G=149
+			;;
 		*) fail "unknown device identity: $DEVICE_ID" ;;
 	esac
+}
+
+read_json_file()
+{
+	local input="$1" size
+	[ -f "$input" ] || fail 'JSON input is not a regular file'
+	size=$(wc -c < "$input")
+	[ "$size" -gt 0 ] && [ "$size" -le 32768 ] || fail 'JSON input has an invalid size'
+	cat "$input"
 }
 
 validate_configuration()
@@ -625,6 +648,14 @@ apply_staged()
 set_device_fallbacks
 
 case "${1:-}" in
+	--validate-json)
+		[ "$#" -eq 2 ] || usage
+		configuration_from_json "$2"
+		;;
+	--validate-json-file)
+		[ "$#" -eq 2 ] || usage
+		configuration_from_json "$(read_json_file "$2")"
+		;;
 	--configure-json)
 		[ "$#" -eq 2 ] || usage
 		candidate=$(mktemp /tmp/rg-ma2820-wifi.XXXXXX)
@@ -635,6 +666,15 @@ case "${1:-}" in
 			[ -x "$peer_tool" ] || fail 'peer configuration helper is unavailable'
 			"$peer_tool" wifi-config "$candidate" || fail 'peer rejected the Wi-Fi configuration; local AP was not changed'
 		fi
+		apply_staged "$candidate"
+		;;
+	--configure-json-file)
+		[ "$#" -eq 2 ] || usage
+		candidate=$(mktemp /tmp/rg-ma2820-wifi.XXXXXX)
+		trap 'rm -f "$candidate"' EXIT INT TERM
+		configuration_from_json "$(read_json_file "$2")"
+		write_configuration "$candidate"
+		[ "$CONFIGURE_SCOPE" != pair ] || fail 'file-based cluster apply must use local scope'
 		apply_staged "$candidate"
 		;;
 	--install-staged)

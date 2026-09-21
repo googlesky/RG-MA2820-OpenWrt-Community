@@ -1,0 +1,51 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+# S07 provisioning has already derived a unique identity from the preserved
+# factory data partition. Never replace it with the generic image hostname.
+. /etc/rg-ma2820/device.env
+
+for section in $(uci -q show network |
+	sed -n 's/^network\.\([^.=]*\)=device$/\1/p'); do
+	[ "$(uci -q get "network.$section.name")" = br-lan ] || continue
+	uci -q delete "network.$section"
+done
+
+uci -q batch <<EOF
+set system.@system[0].hostname='$HOSTNAME'
+set network.br_lan='device'
+set network.br_lan.name='br-lan'
+set network.br_lan.type='bridge'
+set network.br_lan.stp='1'
+set network.br_lan.igmp_snooping='1'
+set network.br_lan.bridge_empty='1'
+add_list network.br_lan.ports='eth0'
+add_list network.br_lan.ports='eth1'
+add_list network.br_lan.ports='eth2'
+add_list network.br_lan.ports='eth3'
+add_list network.br_lan.ports='eth4'
+set network.lan='interface'
+set network.lan.device='br-lan'
+set network.lan.proto='none'
+set network.lan.delegate='0'
+delete network.lan.ip6assign
+delete network.lan.ip6hint
+set network.mgmt='interface'
+set network.mgmt.device='br-lan'
+set network.mgmt.proto='dhcp'
+set network.mgmt.hostname='$HOSTNAME'
+set network.mgmt.metric='10'
+set network.mgmt.delegate='0'
+set dhcp.lan.ignore='1'
+set dhcp.lan.dhcpv4='disabled'
+set dhcp.lan.dhcpv6='disabled'
+set dhcp.lan.ra='disabled'
+EOF
+
+uci -q commit system
+uci -q commit network
+uci -q commit dhcp
+uci -q set 'umdns.@umdns[0].jail=0'
+uci -q commit umdns
+
+exit 0

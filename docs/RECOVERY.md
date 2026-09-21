@@ -1,5 +1,13 @@
 # Recovery and first-install safety
 
+## Back up before conversion
+
+Capture every `/dev/mtd*` partition, `/proc/mtd`, the UBI inventory, the
+factory `/data/.kernel_nvram.setting`, and a complete UART boot log before a
+persistent installation. Hash the backup and copy it to a second storage
+device. A generic image preserves the separate factory `data` MTD, but that is
+not a substitute for an offline backup.
+
 ## UART wiring
 
 Use a 3.3 V USB-TTL adapter. The verified console is 115200 baud, 8 data bits,
@@ -48,30 +56,50 @@ RAM address from examples for MIPS Broadcom boards.
 
 ## Initial web conversion
 
-The `*-web.bin` wrapper is intended only for the matching physical AP while it
-still runs stock RGOS. Use `tools/rg-eweb.py upload-check` first; it asks RGOS
-to validate the real model/header and then cancels the upload:
+The generic `*-web.bin` wrapper is intended only for a compatible
+RG-MA2820(T) still running stock RGOS. Inspect it locally and ask RGOS to
+validate the real upload without starting an upgrade:
 
 ```sh
+python3 tools/rg-web-image.py inspect \
+  /private/output-r34/RG-MA2820T-OpenWrt-Community-r34-web.bin
+
 python3 tools/rg-eweb.py --host AP_ADDRESS upload-check \
-  /private/output-r1/ap2/RG-MA2820T-AP2-OpenWrt-r1-web.bin
+  /private/output-r34/RG-MA2820T-OpenWrt-Community-r34-web.bin
 ```
 
-Only the explicit `upload-flash --yes-really-flash` path starts an upgrade.
-Keep UART attached, stable power, the complete stock backup, and a known
-working stock-slot rollback procedure during the first persistent test.
+The EWEB client prompts for the current management password without terminal
+echo. Only the explicit `upload-flash --yes-really-flash` path starts an
+upgrade. Keep UART attached, stable power, the complete stock backup, and a
+tested TFTP path during the first persistent conversion.
 
 The wrapper intentionally contains no CFEROM. Nevertheless, first conversion
 replaces the system UBI layout and is a high-risk operation. A structurally
-valid image is not proof that untested hardware will boot it.
+valid image or a successful vendor upload check does not prove that untested
+hardware will boot it.
 
-## After conversion
+## First boot and emergency access
 
-Normal updates use the matching `*-system.squashfs` through
-`rg-ma2820-system-upgrade`; they write the inactive slot and preserve the
-accepted fallback. Do not use a full web wrapper for routine updates.
+Successful first boot imports that unit's factory calibration, creates unique
+SSH host keys, and starts an open `RG-MA2820-Setup` WLAN. The initial login is
+`root` / `root`. Connect only from a trusted local network, change the root
+password and Wi-Fi profile immediately, then create or join the wired cluster.
 
-If a trial fails its health gate, the immutable bootstrap returns to the last
-accepted system. If both systems are unusable, request immutable recovery and
-repair over a directly connected LAN. Rewriting recovery itself is exceptional
-because power loss during volume 0 replacement can still require UART.
+DHCP is the normal management path. The generated per-device link-local
+address is available in `/etc/rg-ma2820/device.env` and on the LuCI overview.
+It is stable for that AP and is intended for a directly connected recovery
+host when upstream DHCP or topology is broken.
+
+## Routine update and rollback
+
+Normal updates use the generic `*-system.squashfs` through
+`rg-ma2820-system-upgrade`. The updater checks the compatibility class, writes
+the inactive slot, performs complete readback/mount/file verification, and
+requests one trial boot. It preserves the accepted slot; do not use the full
+web wrapper for routine updates.
+
+If a trial fails its health gate, immutable bootstrap returns to the last
+accepted system. A peer does not have to be online for that health decision.
+If both systems are unusable, request immutable recovery and repair over a
+directly connected LAN. Rewriting recovery itself is exceptional because
+power loss during volume 0 replacement can still require UART.

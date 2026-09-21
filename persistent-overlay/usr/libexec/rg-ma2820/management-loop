@@ -111,10 +111,19 @@ wait_for_bridge || exit 1
 derive_addresses || exit 1
 ensure_link_local
 
-# AP2 wins an isolated-pair election by starting its fallback server first.
-# A lone AP3 still becomes reachable after the longer delay.
-[ "$DEVICE_ID" = ap2 ] && initial_wait=30 || initial_wait=60
-[ "$DEVICE_ID" = ap2 ] && probe_wait=60 || probe_wait=75
+# Pair images retain their bounded AP2/AP3 election. Community nodes stagger
+# by their unique identity; the first fallback DHCP server causes every other
+# node's DHCP client to succeed, so adding APs does not create N DHCP servers.
+case "$DEVICE_ID" in
+	ap2) initial_wait=30; probe_wait=60 ;;
+	ap3) initial_wait=60; probe_wait=75 ;;
+	node-*)
+		election=$(printf %s "$DEVICE_ID" | cksum | awk '{print $1}')
+		initial_wait=$((30 + election % 45))
+		probe_wait=$((75 + election % 30))
+		;;
+	*) initial_wait=60; probe_wait=75 ;;
+esac
 
 while true; do
 	ensure_link_local

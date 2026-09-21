@@ -6,6 +6,7 @@ DEVICE_ENV=${RG_MA2820_DEVICE_ENV:-/etc/rg-ma2820/device.env}
 STATE_FILE=${RG_MA2820_WIFI_STATE:-/var/run/rg-ma2820-wifi.state}
 PEER_STATE_FILE=${RG_MA2820_PEER_WIFI_STATE:-/var/run/rg-ma2820-peer-wifi.state}
 EVENT_FILE=${RG_MA2820_ROAM_EVENTS:-/var/run/rg-ma2820-roaming.events}
+CLUSTER_ENV=${RG_MA2820_CLUSTER_ENV:-/etc/rg-ma2820/cluster.env}
 WL=${RG_MA2820_WL:-/opt/bcm/sbin/wl}
 HOSTAPD_CLI=${RG_MA2820_HOSTAPD_CLI:-/opt/bcm/sbin/hostapd_cli}
 PING=${RG_MA2820_PING:-ping}
@@ -14,6 +15,7 @@ PING=${RG_MA2820_PING:-ping}
 [ -r "$DEVICE_ENV" ] || exit 1
 . "$WIFI_ENV"
 . "$DEVICE_ENV"
+[ ! -r "$CLUSTER_ENV" ] || . "$CLUSTER_ENV"
 . /usr/share/libubox/jshn.sh
 
 WIFI_CONFIG_VERSION=${WIFI_CONFIG_VERSION:-1}
@@ -281,7 +283,9 @@ txpower_matches()
 }
 
 peer_online=0
-"$PING" -c 1 -W 1 "$PEER_LINK_LOCAL" >/dev/null 2>&1 && peer_online=1
+if [ -n "${PEER_LINK_LOCAL:-}" ]; then
+	"$PING" -c 1 -W 1 "$PEER_LINK_LOCAL" >/dev/null 2>&1 && peer_online=1
+fi
 recovery=0
 [ ! -e /etc/rg-ma2820/recovery-root ] || recovery=1
 release="$(cat /etc/rg-ma2820/release 2>/dev/null)"
@@ -325,7 +329,14 @@ txpower_ok=1
 [ "$RADIO_2G_ENABLED" != 1 ] || txpower_matches wl0 "$TXPOWER_2G_DBM" || txpower_ok=0
 [ "$RADIO_5G_ENABLED" != 1 ] || txpower_matches wl1 "$TXPOWER_5G_DBM" || txpower_ok=0
 mesh_ready=0
-if [ "$WIFI_PROFILE" = wired-mesh ] && [ "$peer_online" = 1 ] &&
+node_ready=0
+if [ "$WIFI_PROFILE" = wired-mesh ] && [ "$radios_ready" = 1 ] &&
+	[ "$txpower_ok" = 1 ]; then
+	node_ready=1
+fi
+if [ "${CLUSTER_ENABLED:-0}" = 1 ] && [ "$node_ready" = 1 ]; then
+	mesh_ready=1
+elif [ "$WIFI_PROFILE" = wired-mesh ] && [ "$peer_online" = 1 ] &&
 	[ "$neighbor_synced" = 1 ] && [ "$config_synced" = 1 ] &&
 	[ "$roaming_online" = 1 ] && [ "$channel_plan_ok" = 1 ] &&
 	[ "$radios_ready" = 1 ] && [ "$txpower_ok" = 1 ]; then
@@ -344,6 +355,7 @@ json_add_string trial_slot "${trial_slot:-none}"
 json_add_string boot_result "${boot_result:-unknown}"
 json_boolean recovery "$recovery"
 json_add_string profile "$WIFI_PROFILE"
+json_add_string config_hash "$(state_value "$state" CONFIG_HASH)"
 json_add_string config_version "$WIFI_CONFIG_VERSION"
 json_add_string backhaul wired
 json_add_string country "$COUNTRY_CODE"
@@ -355,6 +367,7 @@ json_boolean config_synced "$config_synced"
 json_boolean roaming_online "$roaming_online"
 json_boolean channel_plan_ok "$channel_plan_ok"
 json_boolean mesh_ready "$mesh_ready"
+json_boolean node_ready "$node_ready"
 json_add_string peer_channel_2g "$peer_channel_2g"
 json_add_string peer_channel_5g "$peer_channel_5g"
 
@@ -430,7 +443,11 @@ json_add_int roam_min_age "$ROAM_MIN_ASSOC_AGE"
 json_boolean hard_fallback "$ROAM_HARD_FALLBACK"
 json_add_int hard_delay "$ROAM_HARD_DELAY"
 json_add_int hard_window "$ROAM_HARD_WINDOW"
-json_add_string scope pair
+if [ "${CLUSTER_ENABLED:-0}" = 1 ]; then
+	json_add_string scope cluster
+else
+	json_add_string scope local
+fi
 json_close_object
 
 json_add_array radios
@@ -441,9 +458,11 @@ json_close_array
 
 json_add_array warnings
 [ "$recovery" != 1 ] || json_add_string '' recovery_mode
-[ "$peer_online" = 1 ] || json_add_string '' peer_offline
-[ "$config_synced" = 1 ] || json_add_string '' config_drift
-[ "$channel_plan_ok" = 1 ] || json_add_string '' channel_overlap
+if [ "${CLUSTER_ENABLED:-0}" != 1 ]; then
+	[ -z "${PEER_ID:-}" ] || [ "$peer_online" = 1 ] || json_add_string '' peer_offline
+	[ -z "${PEER_ID:-}" ] || [ "$config_synced" = 1 ] || json_add_string '' config_drift
+	[ -z "${PEER_ID:-}" ] || [ "$channel_plan_ok" = 1 ] || json_add_string '' channel_overlap
+fi
 [ "$radios_ready" = 1 ] || json_add_string '' radio_offline
 [ "$txpower_ok" = 1 ] || json_add_string '' txpower_mismatch
 case "$selected_channel_5g" in 52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144) json_add_string '' dfs_channel ;; esac

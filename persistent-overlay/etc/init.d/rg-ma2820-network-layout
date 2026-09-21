@@ -29,6 +29,9 @@ sync_managed_file()
 sync_release_file()
 {
 	local target="$1" mode="$2" description="$3"
+	# Community-only services are absent from pair-specific images. Treat a
+	# missing immutable source as an intentionally unavailable optional payload.
+	[ -f "$ROM_ROOT$target" ] || return 0
 	if ! cmp -s "$ROM_ROOT$target" "$SYNC_ROOT$target"; then
 		case "$target" in
 			/usr/share/rpcd/*) RPC_PAYLOAD_CHANGED=1 ;;
@@ -52,10 +55,12 @@ sync_release_payload()
 	done <<'EOF'
 /etc/init.d/bcm6755-vendor-drivers|0755|vendor-driver service
 /etc/init.d/rg-ma2820-boot-success|0755|A/B health gate
+/etc/init.d/rg-ma2820-cluster-sync|0755|community cluster synchronizer
 /etc/init.d/rg-ma2820-leds|0755|LED service
 /etc/init.d/rg-ma2820-management|0755|management service
 /etc/init.d/rg-ma2820-neighbor-sync|0755|neighbor-sync service
 /etc/init.d/rg-ma2820-network-layout|0755|overlay migration service
+/etc/init.d/rg-ma2820-provision|0755|community first-boot provisioner
 /etc/init.d/rg-ma2820-reset-watch|0755|Reset watcher service
 /etc/init.d/rg-ma2820-roaming|0755|roaming service
 /etc/init.d/rg-ma2820-wifi|0755|Wi-Fi service
@@ -63,6 +68,7 @@ sync_release_payload()
 /etc/init.d/umdns|0755|mDNS service
 /usr/libexec/rg-ma2820/bootstate|0755|bootstate helper
 /usr/libexec/rg-ma2820/channel-select|0755|channel selector
+/usr/libexec/rg-ma2820/cluster-sync-loop|0755|community cluster sync loop
 /usr/libexec/rg-ma2820/led-loop|0755|LED controller
 /usr/libexec/rg-ma2820/led-traffic|0755|Physical Ethernet traffic pulses
 /usr/libexec/rg-ma2820/management-loop|0755|management controller
@@ -70,6 +76,7 @@ sync_release_payload()
 /usr/libexec/rg-ma2820/reset-watch|0755|Reset controller
 /usr/libexec/rg-ma2820/roaming-steer|0755|roaming controller
 /usr/sbin/rg-ma2820-factory-reset|0755|factory-reset command
+/usr/sbin/rg-ma2820-cluster|0755|community cluster command
 /usr/sbin/rg-ma2820-peer|0755|peer command
 /usr/sbin/rg-ma2820-recovery-upgrade|0755|immutable-recovery updater
 /usr/sbin/rg-ma2820-set-wifi|0755|Wi-Fi configuration command
@@ -82,10 +89,13 @@ sync_release_payload()
 /usr/share/luci/menu.d/luci-app-rg-ma2820.json|0644|LuCI menu
 /usr/share/rpcd/acl.d/luci-app-rg-ma2820.json|0644|LuCI ACL
 /usr/share/rpcd/ucode/rg-ma2820.uc|0644|LuCI RPC
+/usr/share/ucode/rg-ma2820/cluster.uc|0644|cluster authentication library
 /usr/lib/lua/luci/i18n/base.vi.lmo|0644|Vietnamese LuCI base catalog
 /usr/lib/lua/luci/i18n/rg-ma2820.vi.lmo|0644|Vietnamese LuCI catalog
 /www/luci-static/resources/view/rg-ma2820/wireless.js|0644|LuCI wireless view
+/www/luci-static/resources/view/rg-ma2820/cluster.js|0644|LuCI cluster view
 /www/luci-static/resources/view/status/index.js|0644|LuCI operations dashboard
+/www/cgi-bin/rg-ma2820-cluster|0755|authenticated cluster endpoint
 EOF
 }
 
@@ -97,7 +107,12 @@ sync_managed_configuration()
 	# form upgrades v2 atomically on its next apply; never erase owner settings
 	# merely because a system slot introduced a newer schema.
 	sync_release_payload || return 1
-	sync_managed_file "$DEVICE_SOURCE" "$SYNC_ROOT$DEVICE_TARGET" 0600 'device identity' || return 1
+	if grep -qx "COMMUNITY_AUTOPROVISION='1'" "$DEVICE_SOURCE" 2>/dev/null &&
+		grep -Eq "^DEVICE_ID='node-[0-9a-f]{6}'$" "$SYNC_ROOT$DEVICE_TARGET" 2>/dev/null; then
+		: # Preserve the identity derived from this unit's factory data MTD.
+	else
+		sync_managed_file "$DEVICE_SOURCE" "$SYNC_ROOT$DEVICE_TARGET" 0600 'device identity' || return 1
+	fi
 	grep -Eq "^WIFI_CONFIG_VERSION='(2|3)'$" "$SYNC_ROOT$WIFI_ENV_TARGET" 2>/dev/null ||
 		sync_managed_file "$WIFI_ENV_SOURCE" "$SYNC_ROOT$WIFI_ENV_TARGET" 0600 'Wi-Fi configuration' || return 1
 }

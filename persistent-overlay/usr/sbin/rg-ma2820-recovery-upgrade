@@ -107,34 +107,35 @@ esac
 [ "${#expected_hash}" -eq 64 ] ||
 	die 'SHA256 must be 64 lowercase hexadecimal characters'
 case "$expected_release" in
-	r[0-9]*) ;;
-	*) die 'release must be an r-number' ;;
+	''|*[!A-Za-z0-9._-]*) die 'release contains unsafe characters' ;;
 esac
-case "${expected_release#r}" in
-	''|*[!0-9]*) die 'release must be an r-number' ;;
-esac
+[ "${#expected_release}" -le 32 ] || die 'release is too long'
 
 # This file is part of the trusted running system. Candidate files are parsed,
 # never sourced, because they are untrusted until all checks have passed.
 . "$DEVICE_ENV"
-case "$DEVICE_ID" in
-	ap2|ap3) ;;
-	*) die "unsupported device identity: ${DEVICE_ID:-missing}" ;;
-esac
+community=0
+if [ "${COMMUNITY_AUTOPROVISION:-0}" = 1 ] && [ -n "${IMAGE_COMPAT:-}" ]; then
+	case "$DEVICE_ID" in node-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) community=1 ;; *) die "invalid community device identity: ${DEVICE_ID:-missing}" ;; esac
+else
+	case "$DEVICE_ID" in ap2|ap3) ;; *) die "unsupported device identity: ${DEVICE_ID:-missing}" ;; esac
+fi
 expected_rescue=${RESCUE_LINK_LOCAL:-}
 expected_peer=${PEER_LINK_LOCAL:-}
 factory_hash=${FACTORY_ROOT_HASH:-}
-[ -n "$expected_rescue" ] && [ -n "$expected_peer" ] ||
-	die 'running system has incomplete recovery addressing'
+[ -n "$expected_rescue" ] || die 'running system has no recovery address'
+[ "$community" = 1 ] || [ -n "$expected_peer" ] ||
+	die 'running system has incomplete peer recovery addressing'
 [ -n "$factory_hash" ] || die 'running system has no trusted factory credential hash'
 [ -n "${FACTORY_SSID_BASE:-}" ] && [ -n "${FACTORY_WIFI_SECURITY:-}" ] ||
 	die 'running system has incomplete factory Wi-Fi metadata'
 [ -n "${FACTORY_COUNTRY_CODE:-}" ] ||
 	die 'running system has no trusted factory country profile'
-[ "${SYSTEM_FORMAT:-}" = 2 ] || die 'unsupported running system format'
+[ "${SYSTEM_FORMAT:-}" = 2 ] || [ "$community:$SYSTEM_FORMAT" = 1:3 ] ||
+	die 'unsupported running system format'
 [ "${RESCUE_LINK_LOCAL:-}" = "$expected_rescue" ] ||
 	die 'running system has an unexpected rescue address'
-[ "${PEER_LINK_LOCAL:-}" = "$expected_peer" ] ||
+[ "$community" = 1 ] || [ "${PEER_LINK_LOCAL:-}" = "$expected_peer" ] ||
 	die 'running system has an unexpected peer address'
 
 actual_hash=$(sha256sum "$image" | cut -d' ' -f1)
@@ -190,16 +191,28 @@ candidate_id=$(sed -n "s/^DEVICE_ID='\([^']*\)'/\1/p" \
 	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
 candidate_format=$(sed -n "s/^SYSTEM_FORMAT='\([^']*\)'/\1/p" \
 	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+candidate_compat=$(sed -n "s/^IMAGE_COMPAT='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
+candidate_autoprovision=$(sed -n "s/^COMMUNITY_AUTOPROVISION='\([^']*\)'/\1/p" \
+	"$MOUNTPOINT/etc/rg-ma2820/device.env" 2>/dev/null)
 candidate_release=$(sed -n '1p' "$MOUNTPOINT/etc/rg-ma2820/release" 2>/dev/null)
-[ "$candidate_id" = "$DEVICE_ID" ] ||
-	die "recovery image belongs to ${candidate_id:-unknown}, not $DEVICE_ID"
+if [ "$community" = 1 ]; then
+	[ "$candidate_id" = auto ] && [ "$candidate_compat" = "$IMAGE_COMPAT" ] &&
+		[ "$candidate_autoprovision" = 1 ] ||
+		die "recovery compatibility is ${candidate_compat:-missing}, expected $IMAGE_COMPAT"
+else
+	[ "$candidate_id" = "$DEVICE_ID" ] ||
+		die "recovery image belongs to ${candidate_id:-unknown}, not $DEVICE_ID"
+fi
 [ "$candidate_format" = "$SYSTEM_FORMAT" ] || die 'recovery system format is wrong'
 [ "$candidate_release" = "$expected_release" ] ||
 	die "recovery release is ${candidate_release:-missing}, not $expected_release"
-grep -qx "RESCUE_LINK_LOCAL='$expected_rescue'" \
-	"$MOUNTPOINT/etc/rg-ma2820/device.env" || die 'recovery rescue address is wrong'
-grep -qx "PEER_LINK_LOCAL='$expected_peer'" \
-	"$MOUNTPOINT/etc/rg-ma2820/device.env" || die 'recovery peer address is wrong'
+if [ "$community" != 1 ]; then
+	grep -qx "RESCUE_LINK_LOCAL='$expected_rescue'" \
+		"$MOUNTPOINT/etc/rg-ma2820/device.env" || die 'recovery rescue address is wrong'
+	grep -qx "PEER_LINK_LOCAL='$expected_peer'" \
+		"$MOUNTPOINT/etc/rg-ma2820/device.env" || die 'recovery peer address is wrong'
+fi
 
 [ -e "$MOUNTPOINT/etc/rg-ma2820/recovery-root" ] || die 'recovery marker is missing'
 [ -x "$MOUNTPOINT/sbin/init" ] || die 'recovery init is not executable'
@@ -218,20 +231,31 @@ for executable in \
 	[ -x "$MOUNTPOINT/$executable" ] || die "required recovery tool is missing: /$executable"
 done
 
-for hostkey in rsa ecdsa ed25519; do
-	[ -s "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" ] ||
-		die "Dropbear $hostkey host key is missing"
-	cmp -s "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" \
-		"/etc/dropbear/dropbear_${hostkey}_host_key" ||
-		die "Dropbear $hostkey host key belongs to another device"
-done
+if [ "$community" = 1 ]; then
+	for hostkey in rsa ecdsa ed25519; do
+		[ ! -e "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" ] ||
+			die 'generic recovery unexpectedly embeds a Dropbear host key'
+	done
+	[ -x "$MOUNTPOINT/etc/init.d/rg-ma2820-provision" ] ||
+		die 'community recovery provisioner is missing'
+	[ -L "$MOUNTPOINT/etc/rc.d/S07rg-ma2820-provision" ] ||
+		die 'community recovery provisioner is not enabled'
+else
+	for hostkey in rsa ecdsa ed25519; do
+		[ -s "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" ] ||
+			die "Dropbear $hostkey host key is missing"
+		cmp -s "$MOUNTPOINT/etc/dropbear/dropbear_${hostkey}_host_key" \
+			"/etc/dropbear/dropbear_${hostkey}_host_key" ||
+			die "Dropbear $hostkey host key belongs to another device"
+	done
 
-authorized=$MOUNTPOINT/etc/dropbear/authorized_keys
-known_hosts=$MOUNTPOINT/root/.ssh/known_hosts
-cmp -s "$authorized" /etc/dropbear/authorized_keys ||
-	die 'peer-rescue authorization differs from the running trusted system'
-cmp -s "$known_hosts" /root/.ssh/known_hosts ||
-	die 'pinned peer host keys differ from the running trusted system'
+	authorized=$MOUNTPOINT/etc/dropbear/authorized_keys
+	known_hosts=$MOUNTPOINT/root/.ssh/known_hosts
+	cmp -s "$authorized" /etc/dropbear/authorized_keys ||
+		die 'peer-rescue authorization differs from the running trusted system'
+	cmp -s "$known_hosts" /root/.ssh/known_hosts ||
+		die 'pinned peer host keys differ from the running trusted system'
+fi
 
 root_hash=$(awk -F: '$1 == "root" { print $2; exit }' "$MOUNTPOINT/etc/shadow")
 [ "$root_hash" = "$factory_hash" ] || die 'factory root credential is wrong'
