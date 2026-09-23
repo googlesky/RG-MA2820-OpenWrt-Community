@@ -30,7 +30,7 @@ log()
 die()
 {
 	log "ERROR: $*"
-	return 1
+	exit 1
 }
 
 env_value()
@@ -132,23 +132,26 @@ install_calibration()
 
 write_identity()
 {
-	local ethernet radio2 radio5 legacy compact suffix sum first second
+	local radio2 radio5 legacy suffix digest sum first second
 	local system_format image_compat factory_root_hash factory_ssid
 	local factory_security factory_country
-	ethernet=$(nvram_mac et0macaddr)
 	radio2=$(nvram_mac 'sb/0/macaddr')
 	radio5=$(nvram_mac 'sb/1/macaddr')
-	valid_mac "$ethernet" || die 'factory Ethernet MAC is invalid'
 	valid_mac "$radio2" || die 'factory 2.4 GHz MAC is invalid'
 	valid_mac "$radio5" || die 'factory 5 GHz MAC is invalid'
+	[ "$radio2" != "$radio5" ] || die 'factory radio MACs collide'
 	legacy=$(mac_add_one "$radio5") || die 'could not allocate the compatibility BSSID'
 	valid_mac "$legacy" || die 'derived compatibility BSSID is invalid'
-	[ "$legacy" != "$ethernet" ] && [ "$legacy" != "$radio2" ] ||
+	[ "$legacy" != "$radio2" ] ||
 		die 'derived compatibility BSSID collides with factory identity'
 
-	compact=$(echo "$ethernet" | tr -d ':')
-	suffix=$(echo "$compact" | sed 's/.*\(.\{6\}\)$/\1/')
-	sum=$(printf %s "$ethernet" | cksum | awk '{print $1}')
+	# et0macaddr in stock factory data is a shared Broadcom placeholder on
+	# observed units. Use the validated per-device radio MAC for identity.
+	suffix=$(printf %s "$radio2" | tr -d ':')
+	digest=$(printf %s "$radio2" | sha256sum | cut -c1-4)
+	printf '%s\n' "$digest" | grep -Eq '^[0-9a-f]{4}$' ||
+		die 'could not hash the factory radio MAC'
+	sum=$((0x$digest))
 	first=$((sum / 256 % 254 + 1))
 	second=$((sum % 254 + 1))
 
@@ -205,6 +208,7 @@ generate_host_keys()
 			die "could not generate the Dropbear $type host key"
 		chmod 0600 "$key.new" || return 1
 		mv -f "$key.new" "$key" || return 1
+		rm -f "$key.new.pub"
 	done
 }
 

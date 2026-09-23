@@ -22,6 +22,20 @@ cmp "$rom/usr/sbin/rg-ma2820-wifi-status" \
 	"$target/usr/sbin/rg-ma2820-wifi-status"
 [ "$(stat -c '%a' "$target/usr/sbin/rg-ma2820-wifi-status")" = 755 ]
 
+# S07 provisions a per-unit identity before S19 syncs the writable overlay.
+# The sync must retain the new twelve-digit value, not restore generic auto.
+mkdir -p "$rom/etc/rg-ma2820" "$target/etc/rg-ma2820"
+cat > "$rom/etc/rg-ma2820/device.env" <<'EOF'
+DEVICE_ID='auto'
+COMMUNITY_AUTOPROVISION='1'
+EOF
+printf "DEVICE_ID='node-020000112240'\n" > "$target/etc/rg-ma2820/device.env"
+printf "WIFI_CONFIG_VERSION='3'\n" > "$target/etc/rg-ma2820/wifi.env"
+RG_MA2820_ROM_ROOT=$rom RG_MA2820_SYNC_ROOT=$target \
+	NETWORK_LAYOUT="$project_dir/persistent-overlay/etc/init.d/rg-ma2820-network-layout" \
+	sh -c '. "$NETWORK_LAYOUT"; sync_managed_configuration'
+grep -qx "DEVICE_ID='node-020000112240'" "$target/etc/rg-ma2820/device.env"
+
 layout=$project_dir/persistent-overlay/etc/init.d/rg-ma2820-network-layout
 for required in \
 	/etc/init.d/rg-ma2820-network-layout \

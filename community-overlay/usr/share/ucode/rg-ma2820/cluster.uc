@@ -47,7 +47,7 @@ export function discover_members(browse, config, device) {
 		let txt = txt_map(service.txt);
 		if (txt.api != '1' || txt.model != 'RG-MA2820T' ||
 		    txt.cluster != config.CLUSTER_ID || txt.node == device.DEVICE_ID ||
-		    !match(txt.node || '', /^node-[0-9a-f]{6}$/))
+		    !match(txt.node || '', /^node-[0-9a-f]{6}([0-9a-f]{6})?$/))
 			continue;
 		let address = null;
 		for (let candidate in service.ipv4 || [])

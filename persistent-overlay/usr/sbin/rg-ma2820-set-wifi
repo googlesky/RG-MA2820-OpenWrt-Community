@@ -238,15 +238,20 @@ load_current_defaults()
 
 set_device_fallbacks()
 {
-	local checksum index
+	local digest checksum index
 	case "$DEVICE_ID" in
 		ap2) FALLBACK_CHANNEL_2G=1; FALLBACK_CHANNEL_5G=36 ;;
 		ap3) FALLBACK_CHANNEL_2G=11; FALLBACK_CHANNEL_5G=149 ;;
-		node-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+		node-*)
+			printf '%s\n' "$DEVICE_ID" | grep -Eq '^node-[0-9a-f]{12}$' ||
+				fail "invalid community device identity: $DEVICE_ID"
 			# The scan remains authoritative. Spread cold-boot fallbacks so an
 			# arbitrary-size cluster does not collapse onto one channel when a
 			# scan temporarily fails.
-			checksum=$(printf %s "$DEVICE_ID" | cksum | awk '{print $1}')
+			digest=$(printf %s "$DEVICE_ID" | sha256sum | cut -c1-4)
+			printf '%s\n' "$digest" | grep -Eq '^[0-9a-f]{4}$' ||
+				fail 'could not hash the community device identity'
+			checksum=$((0x$digest))
 			index=$((checksum % 3))
 			case "$index" in 0) FALLBACK_CHANNEL_2G=1 ;; 1) FALLBACK_CHANNEL_2G=6 ;; *) FALLBACK_CHANNEL_2G=11 ;; esac
 			index=$((checksum % 2))

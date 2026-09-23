@@ -95,7 +95,7 @@ rpc_status_healthy()
 	actual_device="$(printf '%s\n' "$response" | "$JSONFILTER" -e '@.device_id')" || return 1
 	[ "$actual_device" = "$expected_device" ] || return 1
 	if [ "$community" = 1 ]; then
-		case "$expected_device" in node-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;; *) return 1 ;; esac
+		printf '%s\n' "$expected_device" | grep -Eq '^node-[0-9a-f]{12}$' || return 1
 		return 0
 	fi
 	[ -n "$expected_peer" ] || return 1

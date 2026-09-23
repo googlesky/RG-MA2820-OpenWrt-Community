@@ -224,7 +224,7 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--version", default="OpenWrt")
     build.add_argument("--release", default="experimental")
     build.add_argument("--build-date", default="2026/09/17 00:00:00")
-    build.add_argument("--build-host", default="codex-rg-ma2820")
+    build.add_argument("--build-host", default="rg-ma2820-builder")
     build.add_argument(
         "--description", default="OpenWrt hybrid using the stock RGOS kernel"
     )

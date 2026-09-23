@@ -191,20 +191,34 @@ fi
 # Generic community identities use the same JSON API and derive stable,
 # distributed scan fallbacks without any AP2/AP3 role.
 cat > "$device_env" <<'EOF'
-DEVICE_ID='node-a1b2c3'
+DEVICE_ID='node-020000112240'
 EOF
+mkdir -p "$temporary/bin"
+cat > "$temporary/bin/cksum" <<'EOF'
+#!/bin/sh
+exit 127
+EOF
+chmod 0755 "$temporary/bin/cksum"
 community_payload=$temporary/community.json
 printf '%s' "$open_payload" |
 	jq -c '.channel_2g="auto" | .channel_5g="auto"' > "$community_payload"
 before=$(sha256sum "$wifi_env")
-RG_MA2820_WIFI_ENV=$wifi_env RG_MA2820_DEVICE_ENV=$device_env \
+PATH="$temporary/bin:$PATH" RG_MA2820_WIFI_ENV=$wifi_env RG_MA2820_DEVICE_ENV=$device_env \
 	RG_MA2820_JSONFILTER=$jsonfilter RG_MA2820_NO_RESTART=1 \
 	sh "$setter" --validate-json-file "$community_payload" >/dev/null
 [ "$(sha256sum "$wifi_env")" = "$before" ]
-RG_MA2820_WIFI_ENV=$wifi_env RG_MA2820_DEVICE_ENV=$device_env \
+PATH="$temporary/bin:$PATH" RG_MA2820_WIFI_ENV=$wifi_env RG_MA2820_DEVICE_ENV=$device_env \
 	RG_MA2820_JSONFILTER=$jsonfilter RG_MA2820_NO_RESTART=1 \
 	sh "$setter" --configure-json-file "$community_payload" >/dev/null
 grep -Eq "^FALLBACK_CHANNEL_2G='(1|6|11)'$" "$wifi_env"
 grep -Eq "^FALLBACK_CHANNEL_5G='(36|149)'$" "$wifi_env"
+sed -i 's/node-020000112240/node-a1b2c3/' "$device_env"
+if PATH="$temporary/bin:$PATH" RG_MA2820_WIFI_ENV=$wifi_env \
+	RG_MA2820_DEVICE_ENV=$device_env RG_MA2820_JSONFILTER=$jsonfilter \
+	RG_MA2820_NO_RESTART=1 sh "$setter" --validate-json-file \
+	"$community_payload" >/dev/null 2>&1; then
+	echo 'JSON setter accepted an obsolete six-digit community identity' >&2
+	exit 1
+fi
 
 echo 'LuCI JSON Wi-Fi profile tests: PASS'

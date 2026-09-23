@@ -98,7 +98,7 @@ let browse = {
 	'_rg-ma2820._tcp': {
 		'rg-ma2820-000001': { ipv4: [ '192.0.2.1' ], txt: [ 'api=1', 'model=RG-MA2820T', 'cluster=0123456789abcdef', 'node=node-000001' ] },
 		'rg-ma2820-000002': { ipv4: [ '192.0.2.2' ], txt: [ 'api=1', 'model=RG-MA2820T', 'cluster=0123456789abcdef', 'node=node-000002', 'release=r34' ] },
-		'rg-ma2820-000003': { ipv4: [ '192.0.2.3' ], txt: [ 'api=1', 'model=RG-MA2820T', 'cluster=0123456789abcdef', 'node=node-000003' ] },
+		'rg-ma2820-020000000003': { ipv4: [ '192.0.2.3' ], txt: [ 'api=1', 'model=RG-MA2820T', 'cluster=0123456789abcdef', 'node=node-020000000003' ] },
 		'rg-ma2820-000004': { ipv4: [ 'bad-address', '192.0.2.4' ], txt: [ 'api=1', 'model=RG-MA2820T', 'cluster=0123456789abcdef', 'node=node-000004' ] },
 		'foreign-cluster': { ipv4: [ '192.0.2.5' ], txt: [ 'api=1', 'model=RG-MA2820T', 'cluster=ffffffffffffffff', 'node=node-000005' ] },
 		'wrong-model': { ipv4: [ '192.0.2.6' ], txt: [ 'api=1', 'model=other', 'cluster=0123456789abcdef', 'node=node-000006' ] }
@@ -111,7 +111,7 @@ EOF
 import json, pathlib, sys
 members = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert {m['device_id'] for m in members} == {
-    'node-000002', 'node-000003', 'node-000004'
+    'node-000002', 'node-020000000003', 'node-000004'
 }
 assert next(m for m in members if m['device_id'] == 'node-000004')['address'] == '192.0.2.4'
 PY

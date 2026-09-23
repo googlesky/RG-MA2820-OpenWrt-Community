@@ -108,7 +108,7 @@ sync_managed_configuration()
 	# merely because a system slot introduced a newer schema.
 	sync_release_payload || return 1
 	if grep -qx "COMMUNITY_AUTOPROVISION='1'" "$DEVICE_SOURCE" 2>/dev/null &&
-		grep -Eq "^DEVICE_ID='node-[0-9a-f]{6}'$" "$SYNC_ROOT$DEVICE_TARGET" 2>/dev/null; then
+		grep -Eq "^DEVICE_ID='node-[0-9a-f]{12}'$" "$SYNC_ROOT$DEVICE_TARGET" 2>/dev/null; then
 		: # Preserve the identity derived from this unit's factory data MTD.
 	else
 		sync_managed_file "$DEVICE_SOURCE" "$SYNC_ROOT$DEVICE_TARGET" 0600 'device identity' || return 1

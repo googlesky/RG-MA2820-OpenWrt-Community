@@ -33,7 +33,7 @@ builds the pinned OpenWrt userspace if it is not already present, and removes
 all temporary vendor files on exit:
 
 ```sh
-./tools/build-community-from-stock.sh r34 /private/output-r34 \
+./tools/build-community-from-stock.sh r38 /private/output-r38 \
   /private/mtd0-rootfs.raw
 ```
 
@@ -51,7 +51,7 @@ community image imports calibration separately at first boot.
 
 The output contains:
 
-- `RG-MA2820T-OpenWrt-Community-r34-web.bin` for initial RGOS conversion;
+- `RG-MA2820T-OpenWrt-Community-r38-web.bin` for initial RGOS conversion;
 - `*-system.squashfs` for routine A/B updates;
 - `*-recovery.squashfs` for exceptional immutable-recovery maintenance;
 - `*.ubi`, `SHA256SUMS`, and a non-secret build manifest.
@@ -117,7 +117,7 @@ Then run:
 ```sh
 RUNTIME_ROOT=$PWD/openwrt/build_dir/target-arm_cortex-a7_musl_eabi/root-bcm6755
 UBINIZE=$PWD/openwrt/staging_dir/host/bin/ubinize \
-  ./tools/build-community-release.sh r34 /private/output-r34 \
+  ./tools/build-community-release.sh r38 /private/output-r38 \
   "$RUNTIME_ROOT" /private/rg-ma2820/vendor-root \
   "$STOCK_VOLUME_DIR"
 ```
@@ -127,8 +127,9 @@ UBINIZE=$PWD/openwrt/staging_dir/host/bin/ubinize \
 The web image rewrites only the system UBI MTD. It does not contain CFEROM and
 does not cover the separate stock `data` MTD. First boot refuses to start the
 normal system health trial unless it can validate and copy a 4–64 KiB
-`.kernel_nvram.setting` with the expected board identifiers and valid unicast
-Ethernet/2.4 GHz/5 GHz MAC addresses.
+`.kernel_nvram.setting` with the expected board identifiers and two distinct,
+valid unicast 2.4 GHz/5 GHz MAC addresses. The observed `et0macaddr` is a
+shared placeholder, not a device identity.
 
 Each AP generates unique Dropbear keys locally. Never copy `/etc/dropbear`,
 `/etc/rg-ma2820/kernel_nvram.setting`, or a writable overlay between APs.

@@ -17,8 +17,18 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$output" ] || exit 2
 printf 'unique-test-key:%s\n' "$output" > "$output"
+printf 'public-test-key:%s\n' "$output" > "$output.pub"
 EOF
 chmod 0755 "$temporary/dropbearkey"
+
+# The device BusyBox has sha256sum but no cksum. A cksum dependency must
+# make this test fail even when the build host provides that command.
+mkdir -p "$temporary/bin"
+cat > "$temporary/bin/cksum" <<'EOF'
+#!/bin/sh
+exit 127
+EOF
+chmod 0755 "$temporary/bin/cksum"
 
 make_calibration() {
 	local path=$1 ethernet=$2 radio2=$3 radio5=$4
@@ -48,6 +58,7 @@ run_node() {
 	make_calibration "$root/factory-nvram" "$ethernet" "$radio2" "$radio5"
 	: > "$root/hostname"
 
+	PATH="$temporary/bin:$PATH" \
 	RG_MA2820_ETC_ROOT="$root/etc" \
 	RG_MA2820_DATA_SOURCE="$root/factory-nvram" \
 	RG_MA2820_UMDNS_DIR="$root/etc/umdns" \
@@ -60,13 +71,16 @@ run_node() {
 	PROVISION="$provision" sh -c '. "$PROVISION"; start'
 }
 
-run_node first 02:00:00:11:22:33 02:00:00:11:22:40 02:00:00:11:22:50
-run_node second 02:00:00:44:55:66 02:00:00:44:55:70 02:00:00:44:55:80
-run_node third 02:00:00:77:88:99 02:00:00:77:88:a0 02:00:00:77:88:b0
+shared_ethernet=00:90:4c:32:4a:11
+# Both observed RG-MA2820(T) units have this same Broadcom placeholder in
+# factory data. Identity must instead follow each radio's unique MAC.
+run_node first "$shared_ethernet" 02:00:00:11:22:40 02:00:00:11:22:50
+run_node second "$shared_ethernet" 02:00:00:44:55:70 02:00:00:44:55:80
+run_node third "$shared_ethernet" 02:00:00:77:88:a0 02:00:00:77:88:b0
 
-for spec in 'first 112233 02:00:00:11:22:51' \
-	'second 445566 02:00:00:44:55:81' \
-	'third 778899 02:00:00:77:88:b1'; do
+for spec in 'first 020000112240 02:00:00:11:22:51' \
+	'second 020000445570 02:00:00:44:55:81' \
+	'third 0200007788a0 02:00:00:77:88:b1'; do
 	set -- $spec
 	root=$temporary/$1
 	grep -qx "DEVICE_ID='node-$2'" "$root/etc/rg-ma2820/device.env"
@@ -78,8 +92,17 @@ for spec in 'first 112233 02:00:00:11:22:51' \
 	[ -e "$root/etc/rg-ma2820/provisioned" ]
 	for type in rsa ecdsa ed25519; do
 		[ -s "$root/etc/dropbear/dropbear_${type}_host_key" ]
+		[ ! -e "$root/etc/dropbear/dropbear_${type}_host_key.new.pub" ]
 	done
 done
+
+# No device runtime may depend on cksum: the target BusyBox does not include
+# it, and an empty shell-arithmetic fallback would synchronize every node.
+if grep -R -n -w cksum "$project_dir/community-overlay" \
+	"$project_dir/persistent-overlay" "$project_dir/hybrid-overlay"; then
+	echo 'target runtime still calls unavailable cksum' >&2
+	exit 1
+fi
 
 identities=$(sed -n "s/^DEVICE_ID='\([^']*\)'/\1/p" \
 	"$temporary"/*/etc/rg-ma2820/device.env | sort -u | wc -l)
@@ -89,8 +112,17 @@ addresses=$(sed -n "s/^RESCUE_LINK_LOCAL='\([^']*\)'/\1/p" \
 [ "$addresses" -eq 3 ]
 
 before=$(sha256sum "$temporary/first/etc/dropbear"/* | sha256sum)
-run_node first 02:00:00:11:22:33 02:00:00:11:22:40 02:00:00:11:22:50
+run_node first "$shared_ethernet" 02:00:00:11:22:40 02:00:00:11:22:50
 after=$(sha256sum "$temporary/first/etc/dropbear"/* | sha256sum)
 [ "$before" = "$after" ]
+
+cp "$temporary/first/factory-nvram" "$temporary/invalid-board"
+sed -i 's/^boardnum=6755$/boardnum=0/' "$temporary/invalid-board"
+if RG_MA2820_DATA_SOURCE="$temporary/invalid-board" \
+	RG_MA2820_LOG_CONSOLE=/dev/null PROVISION="$provision" \
+	sh -c '. "$PROVISION"; validate_calibration' >/dev/null 2>&1; then
+	echo 'invalid factory board number was accepted' >&2
+	exit 1
+fi
 
 echo 'generic three-node identity, calibration and host-key provisioning tests: PASS'

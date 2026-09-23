@@ -21,10 +21,12 @@ pre-enrolled peer. Early on first boot, `rg-ma2820-provision`:
 
 1. locates the separate stock `data` MTD and mounts it read-only;
 2. validates the calibration size, board number `6755`, board type `0x08a9`,
-   and the three required unicast MAC addresses;
+   and the two distinct unicast radio MAC addresses; the observed Ethernet
+   field is a shared placeholder and is not used as a node identity;
 3. copies that AP's calibration into its writable overlay;
-4. derives a stable `node-xxxxxx` identity, hostname, recovery link-local
-   address, and BSSIDs from the device's own factory addresses; and
+4. derives a stable `node-<12 hex digits>` identity, hostname, recovery
+   link-local address, and BSSIDs from the device's validated factory radio
+   MACs, not the shared `et0macaddr` placeholder; and
 5. generates new RSA, ECDSA, and Ed25519 Dropbear host keys locally.
 
 Normal services do not pass their health gate if provisioning fails. The

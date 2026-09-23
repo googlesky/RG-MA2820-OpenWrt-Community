@@ -44,7 +44,8 @@ elif [ "${1:-}" = call ] && [ "${2:-}" = luci.rg-ma2820 ] &&
 	elif [ -e "$RG_TEST_STATE_DIR/broken-rpc-schema" ]; then
 		echo '{"device_id":"ap2","peer_status":{"device_id":"ap3"}}'
 	else
-		echo '{"device_id":"ap2","peer_status":{"available":true,"online":true,"device_id":"ap3"}}'
+		printf '{"device_id":"%s","peer_status":{"available":true,"online":true,"device_id":"ap3"}}\n' \
+			"${RG_TEST_RPC_DEVICE:-ap2}"
 	fi
 else
 	echo luci.rg-ma2820
@@ -247,5 +248,26 @@ if run_trial_gate; then
 	exit 1
 fi
 unset RG_TEST_TXPOWER_2G_QDBM
+
+# A new generic node must pass the RPC identity gate. The obsolete short
+# identity must not be accepted as a successful r38 first boot.
+cat > "$work_dir/device.env" <<'EOF'
+DEVICE_ID='node-020000112240'
+COMMUNITY_AUTOPROVISION='1'
+EOF
+PATH="$mock_bin:$PATH" RG_MA2820_DEVICE_ENV="$work_dir/device.env" \
+	RG_MA2820_JSONFILTER="$mock_bin/jsonfilter" \
+	RG_TEST_STATE_DIR="$work_dir" RG_TEST_RPC_DEVICE=node-020000112240 \
+	BOOT_SUCCESS="$project_dir/persistent-overlay/etc/init.d/rg-ma2820-boot-success" \
+	sh -c '. "$BOOT_SUCCESS"; rpc_status_healthy'
+sed -i 's/node-020000112240/node-a1b2c3/' "$work_dir/device.env"
+if PATH="$mock_bin:$PATH" RG_MA2820_DEVICE_ENV="$work_dir/device.env" \
+	RG_MA2820_JSONFILTER="$mock_bin/jsonfilter" \
+	RG_TEST_STATE_DIR="$work_dir" RG_TEST_RPC_DEVICE=node-a1b2c3 \
+	BOOT_SUCCESS="$project_dir/persistent-overlay/etc/init.d/rg-ma2820-boot-success" \
+	sh -c '. "$BOOT_SUCCESS"; rpc_status_healthy'; then
+	echo 'trial gate accepted an obsolete six-digit community identity' >&2
+	exit 1
+fi
 
 echo 'A/B trial full-stack health-gate tests: PASS'

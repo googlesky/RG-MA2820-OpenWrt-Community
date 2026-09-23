@@ -42,8 +42,7 @@ derive_addresses()
 	}
 
 	# A bridge can briefly carry a generated MAC before its physical ports join.
-	# Use the per-device value baked into the image so first boot cannot capture
-	# that transient address and make peer rescue unreachable.
+	# Use the per-device value provisioned from factory calibration instead.
 	LINK_LOCAL=$RESCUE_LINK_LOCAL
 	FALLBACK_X=$rescue_tail
 	FALLBACK_IP="10.44.${FALLBACK_X}.1"
@@ -118,7 +117,10 @@ case "$DEVICE_ID" in
 	ap2) initial_wait=30; probe_wait=60 ;;
 	ap3) initial_wait=60; probe_wait=75 ;;
 	node-*)
-		election=$(printf %s "$DEVICE_ID" | cksum | awk '{print $1}')
+		printf '%s\n' "$DEVICE_ID" | grep -Eq '^node-[0-9a-f]{12}$' || exit 1
+		digest=$(printf %s "$DEVICE_ID" | sha256sum | cut -c1-4)
+		printf '%s\n' "$digest" | grep -Eq '^[0-9a-f]{4}$' || exit 1
+		election=$((0x$digest))
 		initial_wait=$((30 + election % 45))
 		probe_wait=$((75 + election % 30))
 		;;

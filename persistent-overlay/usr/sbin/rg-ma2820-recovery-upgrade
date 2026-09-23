@@ -116,7 +116,11 @@ esac
 . "$DEVICE_ENV"
 community=0
 if [ "${COMMUNITY_AUTOPROVISION:-0}" = 1 ] && [ -n "${IMAGE_COMPAT:-}" ]; then
-	case "$DEVICE_ID" in node-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) community=1 ;; *) die "invalid community device identity: ${DEVICE_ID:-missing}" ;; esac
+	if printf '%s\n' "$DEVICE_ID" | grep -Eq '^node-[0-9a-f]{12}$'; then
+		community=1
+	else
+		die "invalid community device identity: ${DEVICE_ID:-missing}"
+	fi
 else
 	case "$DEVICE_ID" in ap2|ap3) ;; *) die "unsupported device identity: ${DEVICE_ID:-missing}" ;; esac
 fi

@@ -40,16 +40,39 @@ Start with an isolated Ethernet link and a TFTP host at `192.168.1.100/24`.
 Interrupt CFE and use its read-only information command first. Continue only
 after confirming the expected BCM47622 board, 256 MiB RAM, and NAND geometry.
 
-Serve the matching stock `vmlinux.lz`, `947622.dtb`, and the initramfs produced
-by `tools/package-hybrid-ramdisk.sh`. The verified physical RAM address for the
-external initramfs is `0x08000000`:
+For a generic candidate on an AP that already runs the older pair-specific
+OpenWrt, first package a **private** RAM trial with that AP's own backed-up
+calibration, stock kernel, and matching DTB. This bundle embeds calibration
+only to avoid attaching the factory MTD during the RAM test; it is not a
+redistributable community image:
+
+```sh
+./tools/package-community-ram-trial.sh \
+  /private/output-r38/rg-ma2820t-community-r38-system.squashfs \
+  /private/ap3/.kernel_nvram.setting \
+  /private/ap3/vmlinux.lz /private/ap3/947622.dtb \
+  /private/ap3-r38-ram-trial
+cd /private/ap3-r38-ram-trial
+sha256sum -c SHA256SUMS
+```
+
+The trial omits the boot-success and physical-Reset services, uses a RAM-backed
+OpenWrt root, and never invokes a firmware writer. Isolate the AP from the
+production LAN: its default WLAN is open and its initial root password is
+`root`. The verified physical RAM address for the external initramfs is
+`0x08000000`:
 
 ```text
 r n 192.168.1.100 vmlinux.lz initramfs.cpio.gz 947622.dtb 0x08000000
 ```
 
-This command boots RAM and does not erase NAND. Check Ethernet, both radios,
-interface MAC addresses, SSH, and LuCI. A power cycle returns to RGOS.
+This CFE command requests a RAM boot and does not erase NAND. On the serial
+console, confirm the expected initramfs, `/proc/cmdline`, and that no writable
+NAND overlay was mounted; then check Ethernet, both radios, interface MACs,
+SSH, and LuCI. A power cycle returns to the firmware already installed on
+that AP (RGOS or the older OpenWrt release). This is a **partial runtime test**:
+it bypasses first-boot factory-MTD import and does not prove the web wrapper,
+persistent A/B conversion, or network-only rollback.
 
 Do not use CFE flash/erase commands during this test. Do not guess a different
 RAM address from examples for MIPS Broadcom boards.
@@ -62,10 +85,10 @@ validate the real upload without starting an upgrade:
 
 ```sh
 python3 tools/rg-web-image.py inspect \
-  /private/output-r34/RG-MA2820T-OpenWrt-Community-r34-web.bin
+  /private/output-r38/RG-MA2820T-OpenWrt-Community-r38-web.bin
 
 python3 tools/rg-eweb.py --host AP_ADDRESS upload-check \
-  /private/output-r34/RG-MA2820T-OpenWrt-Community-r34-web.bin
+  /private/output-r38/RG-MA2820T-OpenWrt-Community-r38-web.bin
 ```
 
 The EWEB client prompts for the current management password without terminal

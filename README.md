@@ -12,6 +12,12 @@ community profile adds a calibration-safe generic image and a controllerless,
 dynamic N-node wired AP cluster. It is not limited to two APs or to the
 historical `ap2`/`ap3` roles.
 
+> **Do not install the r34 source prerelease.** It derived node identity from
+> an `et0macaddr` placeholder shared by observed units and used `cksum`, which
+> is absent from the target runtime. The r38 candidate corrects those issues
+> and the downstream identity checks and management-election fallback;
+> its complete first boot on an AP is still unverified.
+
 ## Generic image, unique devices
 
 One generated `*-web.bin` can be installed on compatible RG-MA2820(T) units.
@@ -58,7 +64,7 @@ makes the final roaming decision.
    git clone --recurse-submodules \
      https://github.com/googlesky/RG-MA2820-OpenWrt-Community.git
    cd RG-MA2820-OpenWrt-Community
-   ./tools/build-community-from-stock.sh r34 ./output-r34 \
+   ./tools/build-community-from-stock.sh r38 ./output-r38 \
      /private/mtd0-rootfs.raw
    ```
 
@@ -72,7 +78,7 @@ makes the final roaming decision.
 
    ```sh
    python3 tools/rg-web-image.py inspect \
-     output-r34/RG-MA2820T-OpenWrt-Community-r34-web.bin
+     output-r38/RG-MA2820T-OpenWrt-Community-r38-web.bin
    ```
 
 5. Read [RECOVERY.md](docs/RECOVERY.md), use the stock upload-check path first,
@@ -91,9 +97,11 @@ from any AP. Reapply the Wi-Fi profile to the cluster after joining a new AP.
 See [the multi-AP operating guide](docs/CLUSTER.md) for topology, scaling, and
 security details.
 
-Do a RAM-only UART/TFTP boot before persistent installation. Keep a 3.3 V UART
-adapter connected and a verified stock backup available during first bring-up.
-See [RECOVERY.md](docs/RECOVERY.md).
+Do a RAM-only UART/TFTP boot before persistent installation. A private
+calibration-backed RAM trial can check the generic runtime without writing the
+new UBI layout, but cannot prove the web conversion or rollback path. Keep a
+3.3 V UART adapter and a verified stock backup available during first
+bring-up. See [RECOVERY.md](docs/RECOVERY.md).
 
 ## Project status
 
@@ -101,8 +109,10 @@ The source, deterministic image constructors, and runtime have regression
 coverage. Release `r33` was accepted on two observed hardware units. The new
 generic/N-node profile passes three-node provisioning tests, target-ARM ucode
 tests, complete SquashFS builds, UBI volume/CRC reconstruction, EWEB/WFI CRC
-validation, and private-material scans. It remains a release candidate until
-the generic first-boot path is independently exercised on physical hardware.
+validation, and private-material scans. The r38 provisioning functions also
+passed an isolated `/tmp` test using one physical AP's real calibration; that
+did not boot the new ROM or write flash. It remains a release candidate until
+the complete generic first-boot path is exercised on physical hardware.
 
 Issues and pull requests are welcome. Never attach private flash dumps,
 calibration files, passwords, or device host keys to a public issue.

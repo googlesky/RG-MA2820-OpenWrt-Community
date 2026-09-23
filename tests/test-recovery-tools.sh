@@ -76,4 +76,45 @@ if env RG_MA2820_DEVICE_ENV="$device_env" \
 	exit 1
 fi
 
+# Validate the generic recovery-upgrade identity gate without a UBI volume or
+# a writable image: a deliberately wrong SHA256 must stop before any write.
+cat > "$device_env" <<'EOF'
+DEVICE_ID='node-020000112240'
+COMMUNITY_AUTOPROVISION='1'
+IMAGE_COMPAT='rg-ma2820t-community-v1'
+RESCUE_LINK_LOCAL='169.254.10.20'
+FACTORY_ROOT_HASH='test-hash'
+FACTORY_SSID_BASE='RG-MA2820-Setup'
+FACTORY_WIFI_SECURITY='open'
+FACTORY_COUNTRY_CODE='US'
+SYSTEM_FORMAT='3'
+EOF
+printf 'invalid image\n' > "$temporary/invalid-image"
+cat > "$temporary/id" <<'EOF'
+#!/bin/sh
+echo 0
+EOF
+chmod 0755 "$temporary/id"
+recovery_upgrade=$project_dir/persistent-overlay/usr/sbin/rg-ma2820-recovery-upgrade
+if RG_MA2820_DEVICE_ENV=$device_env RG_MA2820_ID="$temporary/id" \
+	RG_MA2820_RECOVERY_MARKER="$temporary/no-marker" \
+	RG_MA2820_RECOVERY_BACKUP="$temporary/no-backup" \
+	sh "$recovery_upgrade" "$temporary/invalid-image" \
+	"$(printf '%064d' 0)" r38 --yes > "$temporary/recovery-log" 2>&1; then
+	echo 'recovery updater accepted an invalid image hash' >&2
+	exit 1
+fi
+grep -q 'input SHA256 does not match' "$temporary/recovery-log"
+sed -i 's/node-020000112240/node-a1b2c3/' "$device_env"
+if RG_MA2820_DEVICE_ENV=$device_env RG_MA2820_ID="$temporary/id" \
+	RG_MA2820_RECOVERY_MARKER="$temporary/no-marker" \
+	RG_MA2820_RECOVERY_BACKUP="$temporary/no-backup" \
+	sh "$recovery_upgrade" "$temporary/invalid-image" \
+	"$(printf '%064d' 0)" r38 --yes > "$temporary/recovery-log" 2>&1; then
+	echo 'recovery updater accepted an obsolete six-digit community identity' >&2
+	exit 1
+fi
+grep -q 'invalid community device identity' "$temporary/recovery-log"
+[ ! -e "$temporary/no-backup" ]
+
 echo 'recovery tool tests: PASS'
